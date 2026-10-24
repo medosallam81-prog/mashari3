@@ -1,0 +1,10 @@
+{
+  "appId": "com.mashari3.app",
+  "appName": "مشاريعي",
+  "webDir": "www",
+  "plugins": {
+    "LocalNotifications": {
+      "iconColor": "#1D2F7A"
+    }
+  }
+}
