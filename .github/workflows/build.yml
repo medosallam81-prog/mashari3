@@ -1,0 +1,58 @@
+name: Build app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Install
+        run: npm install
+      - name: Create Android project
+        run: |
+          npx cap add android
+          sed -i 's#<application#<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />\n    <application#' android/app/src/main/AndroidManifest.xml
+          npx cap sync android
+      - name: Use fixed signing key
+        run: |
+          mkdir -p ~/.android
+          cp android-debug.keystore ~/.android/debug.keystore
+      - name: Build APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mashari3-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+  web:
+    name: Computer version
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: www
+      - uses: actions/deploy-pages@v4
