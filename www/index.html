@@ -194,13 +194,42 @@ details.donegrp summary{cursor:pointer;color:var(--muted);font-size:.88rem;paddi
 .tmeta .stg{color:var(--text)}
 .tmeta .stg::before{content:"📄 "}
 .tmeta .stg.ready{color:var(--danger);font-weight:600}
+.assigned li{border-bottom:1px solid var(--rule);padding:6px 0}
+.arow{display:flex;gap:10px;align-items:flex-start}
+.arow .tbody{cursor:pointer}
+.areply{display:grid;gap:8px;margin:8px 0 4px}
+.areply textarea{min-height:60px;resize:vertical}
+.from{font-size:.74rem;color:var(--muted)}
+.shareline{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.wa{background:#1FA855;border-color:#1FA855;color:#fff}
+.langs{display:flex;gap:6px;flex-wrap:wrap}
+.member{display:grid;gap:6px;background:var(--paper);border-radius:12px;padding:10px}
+.member .row{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.member .field{background:var(--sheet)}
+.tmeta .shr{color:var(--ink)}
+.tmeta .rep{color:var(--text);font-style:italic}
+.btn{white-space:nowrap}
+header.top{flex-wrap:wrap}
+.brand{font-size:clamp(1.25rem,6vw,1.6rem)}
+.thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px}
+.thumb{position:relative;border:none;padding:0;border-radius:10px;overflow:hidden;aspect-ratio:1;background:var(--rule)}
+.thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.thumb .tl{position:absolute;inset-inline-start:4px;bottom:4px;font-size:.68rem;padding:1px 7px;border-radius:999px;background:rgba(0,0,0,.6);color:#fff}
+.thumb .tl.after{background:#1F8A4C}.thumb .tl.before{background:#B45309}
+.gal{display:grid;gap:8px}
+.viewer img{width:100%;max-height:65vh;object-fit:contain;border-radius:12px;background:#000}
+.tmeta .urg{color:var(--danger);font-weight:600}
+.urgc{font-size:.8rem;color:var(--danger);font-weight:600}
+.brief{background:var(--paper);border-radius:10px;padding:8px 12px;margin:0;font-size:.9rem;white-space:pre-wrap}
+select.field{appearance:auto}
+.dfoot{flex-wrap:wrap;gap:8px}
 .toast{position:fixed;bottom:calc(18px + env(safe-area-inset-bottom,0px));inset-inline:0;margin:auto;width:max-content;max-width:90vw;background:var(--text);color:var(--sheet);padding:8px 16px;border-radius:999px;font-size:.88rem;z-index:30}
 </style>
 </head>
 <body>
 <div class="login hidden" id="login">
-  <h1>مشاريعي</h1>
-  <p>ادخل بحسابك عشان مهامك تبقى متزامنة بين التليفون والكمبيوتر.</p>
+  <h1 id="loginTitle">مشاريعي</h1>
+  <p id="loginSub">ادخل بحسابك عشان مهامك تبقى متزامنة بين التليفون والكمبيوتر.</p>
   <form id="loginForm" autocomplete="on">
     <input class="field" id="email" type="email" placeholder="الإيميل" autocomplete="email" required dir="ltr">
     <input class="field" id="pass" type="password" placeholder="الباسورد (٦ حروف على الأقل)" autocomplete="current-password" required dir="ltr">
@@ -216,7 +245,7 @@ details.donegrp summary{cursor:pointer;color:var(--muted);font-size:.88rem;paddi
 <div class="app hidden" id="app">
   <div class="listcol">
     <header class="top">
-      <h1 class="brand">مشاريعي</h1>
+      <h1 class="brand" id="brand">مشاريعي</h1>
       <div style="display:flex;align-items:center;gap:6px">
         <span class="sync" id="sync"><i></i><span>بيحمّل…</span></span>
         <button class="iconbtn" id="menuBtn" aria-label="الإعدادات" title="الإعدادات">⚙︎</button>
@@ -226,12 +255,13 @@ details.donegrp summary{cursor:pointer;color:var(--muted);font-size:.88rem;paddi
     <div class="banner hidden" id="banner"></div>
     <form class="addp" id="addForm" autocomplete="off">
       <input class="field" id="addName" placeholder="اسم المشروع الجديد" aria-label="اسم المشروع الجديد">
-      <button class="btn solid" type="submit">إضافة</button>
+      <button class="btn solid" type="submit" id="addSubmit">إضافة</button>
     </form>
     <input class="field search" id="q" type="search" placeholder="دوّر باسم شخص أو مهمة أو رقم معاملة…" aria-label="بحث">
     <div class="people" id="people"></div>
     <div id="results"></div>
     <div id="home">
+      <section class="soon" id="mine" hidden></section>
       <section class="soon" id="soon" hidden></section>
       <section class="now" id="now" hidden></section>
       <ul class="plist" id="plist"></ul>
@@ -244,6 +274,7 @@ details.donegrp summary{cursor:pointer;color:var(--muted);font-size:.88rem;paddi
 <input type="file" id="importFile" accept="application/json,.json" class="hidden">
 
 <script src="firebase-config.js"></script>
+<script src="i18n.js"></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>
