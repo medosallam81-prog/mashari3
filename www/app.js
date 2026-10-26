@@ -14,6 +14,7 @@ let cloud = null;           // {db, F, ref, user, signOut}
 let writing = false, pending = false, timer = null, dirty = false, lastWritten = '';
 let toMe = [];              // مهام متبعتالي من ناس تانية
 let ownerSharedReady = false;
+let serverReady = false;   // مايتكتبش على السيرفر قبل ما نستلم أحدث نسخة منه
 let filesCache = {}, fileSub = { key: '', unsub: null };
 let deptFilter = ''; try { deptFilter = localStorage.getItem('mashari3-dept') || ''; } catch (e) {}
 const projOK = (p) => !deptFilter || p.dept === deptFilter;
@@ -185,11 +186,12 @@ function save() {
   processRepeats(); stampTimes();
   dirty = true; saveLocal(); scheduleNotifs();
   if (!cloud) { dirty = false; return; }
+  if (!serverReady) { dirty = false; return; }
   setSync('saving');
   clearTimeout(timer); timer = setTimeout(() => { timer = null; flush(); }, 700);
 }
 async function flush() {
-  if (!cloud) return;
+  if (!cloud || !serverReady) return;
   if (writing) { pending = true; return; }
   writing = true;
   pushShared();
@@ -1733,15 +1735,23 @@ async function startCloud() {
   A.onAuthStateChanged(auth, (user) => {
     if (unsub) { unsub(); unsub = null; }
     if (unsubShared) { unsubShared(); unsubShared = null; }
-    toMe = []; ownerSharedReady = false;
+    toMe = []; ownerSharedReady = false; serverReady = false;
     if (!user) { kStop(); myOrg = null; orgResolved = false; cloud = null; state = { projects: [], team: [], profile: {} }; showLogin(); return; }
     const ref = F.doc(db, 'users', user.uid, 'data', 'board');
     cloud = { db, F, ref, user, signOut: () => { try { localStorage.removeItem(LKEY); } catch (e) {} return A.signOut(auth); } };
     loadLocal(); showApp(); render();
     unsub = F.onSnapshot(ref, { includeMetadataChanges: true }, (snap) => {
       setSync(snap.metadata.fromCache && !navigator.onLine ? 'offline' : 'ok');
+      const d0 = snap.exists() ? snap.data() : null;
+      if (!serverReady) {
+        if (snap.metadata.fromCache) { if (valid(d0)) applyRemote(d0); return; }
+        serverReady = true; lastWritten = '';
+        if (valid(d0)) applyRemote(d0); else if (state.projects.length) save();
+        save();
+        return;
+      }
       if (snap.metadata.hasPendingWrites || dirty) return;
-      const d = snap.exists() ? snap.data() : null;
+      const d = d0;
       if (valid(d)) applyRemote(d);
       else if (!snap.metadata.fromCache && state.projects.length) save();
     }, (e) => { console.warn(e); setSync('err'); });
