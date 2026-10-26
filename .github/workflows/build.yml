@@ -59,12 +59,19 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
 
   web:
-    name: Computer version (GitHub Pages)
+    name: Computer version + download link
+    needs: android
     runs-on: ubuntu-latest
     environment:
       name: github-pages
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mashari3-apk
+          path: apk
+      - name: Put the app on the website
+        run: cp apk/app-debug.apk www/mashari3.apk
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
