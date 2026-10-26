@@ -3,7 +3,7 @@ const CFG = window.FIREBASE_CONFIG;
 const CAP = window.Capacitor;
 const isNative = !!(CAP && CAP.isNativePlatform && CAP.isNativePlatform());
 const LN = isNative && CAP.registerPlugin ? CAP.registerPlugin('LocalNotifications') : null;
-const FB = 'https://www.gstatic.com/firebasejs/10.12.2/';
+const FB = 'https://www.gstatic.com/firebasejs/11.10.0/';
 const LKEY = 'mashari3-board', LANGKEY = 'mashari3-lang';
 const WEB_URL = 'https://medosallam81-prog.github.io/mashari3/';
 const APK_URL = WEB_URL + 'mashari3.apk';
@@ -294,11 +294,83 @@ function logText(e) {
   if (e.a === 'msg') return e.m;
   return (t('logA')[e.a] || e.a) + (e.m ? ' ' + e.m : '');
 }
+/* ---------------- automatic translation (Gemini via Firebase AI Logic) ---------------- */
+let fbApp = null, aiMod = null, aiState = 'unknown';   // unknown | ok | off
+const TRKEY = 'mashari3-tr';
+let trCache = {}; try { trCache = JSON.parse(localStorage.getItem(TRKEY) || '{}'); } catch (e) {}
+const trQueue = new Map(); let trTimer = null, trBusy = false;
+const trOn = () => state.profile.translate !== false;
+const AR = /[\u0600-\u06FF]/, LAT = /[A-Za-zčćžšđČĆŽŠĐ]/;
+function needsTr(text) {
+  if (!text || text.length < 2) return false;
+  if (lang === 'ar') return LAT.test(text) && !AR.test(text);
+  return AR.test(text) || (LAT.test(text) && state.profile.trLatin !== false);
+}
+function tr(text) {
+  if (!trOn() || aiState === 'off' || !needsTr(text)) return null;
+  const k = lang + '|' + text;
+  if (k in trCache) return trCache[k];
+  if (!trQueue.has(k)) { trQueue.set(k, text); clearTimeout(trTimer); trTimer = setTimeout(flushTr, 500); }
+  return null;
+}
+const trT = (text) => tr(text) || text;
+async function aiGenerate(prompt, json) {
+  if (!fbApp) throw new Error('noapp');
+  if (!aiMod) {
+    const A = await import(FB + 'firebase-ai.js');
+    aiMod = { A, ai: A.getAI(fbApp, { backend: new A.GoogleAIBackend() }), names: ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'], i: 0 };
+  }
+  let last;
+  for (; aiMod.i < aiMod.names.length; aiMod.i++) {
+    try {
+      const m = aiMod.A.getGenerativeModel(aiMod.ai, json ? { model: aiMod.names[aiMod.i], generationConfig: { responseMimeType: 'application/json' } } : { model: aiMod.names[aiMod.i] });
+      const r = await m.generateContent(prompt);
+      return r.response.text();
+    } catch (e) { last = e; if (!/not.?found|404|not supported|unsupported|deprecat/i.test(String(e && e.message || e))) throw e; }
+  }
+  throw last || new Error('nomodel');
+}
+async function flushTr() {
+  if (trBusy || !trQueue.size) return;
+  trBusy = true;
+  const batch = [...trQueue.entries()].slice(0, 25);
+  batch.forEach(([k]) => trQueue.delete(k));
+  const target = { ar: 'Egyptian Arabic', en: 'English', me: 'Montenegrin (Latin script)' }[lang];
+  const prompt = 'Translate each string in this JSON array into ' + target + '. Keep names of people and places, numbers, times and emojis as they are. Keep it short and natural, like a workplace task. If a string is already in ' + target + ', return it unchanged. Reply with ONLY a JSON array of strings with the same length and order.\n' + JSON.stringify(batch.map(([, v]) => v));
+  try {
+    const raw = await aiGenerate(prompt);
+    const out = JSON.parse(raw.replace(/```json|```/g, '').trim());
+    if (Array.isArray(out) && out.length === batch.length) {
+      batch.forEach(([k], i) => { if (typeof out[i] === 'string') trCache[k] = out[i]; });
+      const keys = Object.keys(trCache); if (keys.length > 3000) keys.slice(0, keys.length - 3000).forEach((k) => delete trCache[k]);
+      try { localStorage.setItem(TRKEY, JSON.stringify(trCache)); } catch (e) {}
+      aiState = 'ok';
+    }
+  } catch (e) {
+    console.warn('translate', e);
+    aiState = 'off';
+  }
+  trBusy = false;
+  const a = document.activeElement;
+  if (!(a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA'))) render();
+  if (trQueue.size && aiState !== 'off') flushTr();
+}
+function gtLink(text) {
+  const tl = { ar: 'ar', en: 'en', me: 'bs' }[lang];
+  return 'https://translate.google.com/?sl=auto&tl=' + tl + '&text=' + encodeURIComponent(text) + '&op=translate';
+}
+function origLine(text) {
+  const tt = tr(text);
+  if (tt) return null;
+  if (aiState === 'off' && needsTr(text)) return h('button', { class: 'iconbtn gt', type: 'button', text: '🌐', title: t('gTranslate'), 'aria-label': t('gTranslate'), onclick: () => openExternal(gtLink(text)) });
+  return null;
+}
+
 function threadView(log, onSend) {
   const box = h('div', { class: 'thread' });
   const list = h('ul', { class: 'tlog' });
   (log || []).slice(-40).forEach((e) => list.append(h('li', { class: e.a === 'msg' ? 'msg' : 'evt' },
-    h('b', { text: e.by || '' }), ' ', h('span', { text: logText(e) }), h('small', { text: ' · ' + fmtTs(e.at) }))));
+    h('b', { text: e.by || '' }), ' ', h('span', { text: e.a === 'msg' ? trT(e.m) : logText(e), title: e.a === 'msg' && tr(e.m) ? e.m : null }), h('small', { text: ' · ' + fmtTs(e.at) }))));
   if (!(log || []).length) list.append(h('li', { class: 'evt', text: t('noLog') }));
   const inp = h('input', { class: 'field', placeholder: t('msgPh') });
   const send = () => { const v = inp.value.trim(); if (!v) return; inp.value = ''; onSend(v); };
@@ -310,7 +382,7 @@ function checklistView(checks, editable, onChange) {
   const box = h('div', { class: 'checks' });
   (checks || []).forEach((c) => {
     const cb = h('input', { type: 'checkbox', onchange: (e) => { c.d = e.target.checked; onChange(checks); } }); cb.checked = !!c.d;
-    box.append(h('div', { class: 'citem' + (c.d ? ' done' : '') }, h('label', { class: 'check' }, cb, h('span', { text: c.t })),
+    box.append(h('div', { class: 'citem' + (c.d ? ' done' : '') }, h('label', { class: 'check' }, cb, h('span', { text: editable ? c.t : trT(c.t) })),
       editable ? h('button', { class: 'del', type: 'button', text: '×', 'aria-label': t('deleteStep'), onclick: () => onChange(checks.filter((y) => y !== c)) }) : null));
   });
   if (editable) {
@@ -364,6 +436,7 @@ async function compressImage(file) {
 function filesQuery(key) {
   const { F, db, user } = cloud, col = F.collection(db, 'files'), id = key.slice(2);
   if (key[0] === 'g') return F.query(col, F.where('org', '==', user.uid), F.where('shareId', '==', id));
+  if (key[0] === 'k') return isGM() ? F.query(col, F.where('org', '==', user.uid), F.where('taskId', '==', 'k_' + id)) : F.query(col, F.where('ownerUid', '==', user.uid), F.where('taskId', '==', 'k_' + id));
   return key[0] === 'o'
     ? F.query(col, F.where('ownerUid', '==', user.uid), F.where('taskId', '==', id))
     : F.query(col, F.where('assigneeEmail', '==', (user.email || '').toLowerCase()), F.where('shareId', '==', id));
@@ -389,7 +462,7 @@ function gallery(key) {
     h('img', { src: f.data, alt: t(f.kind), loading: 'lazy' }), h('span', { class: 'tl ' + f.kind, text: t(f.kind) }))));
   box.append(grid);
   const acts = h('div', { class: 'quick' });
-  (ctx.mode === 'g' ? [] : ctx.mode === 'o' ? ['before', 'after', 'doc'] : ['after', 'doc']).forEach((k) =>
+  (ctx.mode === 'g' ? [] : ctx.mode === 'k' ? ['doc'] : ctx.mode === 'o' ? ['before', 'after', 'doc'] : ['after', 'doc']).forEach((k) =>
     acts.append(h('button', { class: 'btn', type: 'button', text: t('add_' + k), onclick: () => pickFile(key, k) })));
   box.append(acts);
   return box;
@@ -408,7 +481,8 @@ async function uploadFile(key, kind, file) {
   if (data.length > 900000) { toast(t('tooBig')); return; }
   const { F, db, user } = cloud;
   const d = { kind, data, at: Date.now(), by: user.uid, byName: (state.profile.name || '').trim() || user.email };
-  if (ctx.mode === 'o') {
+  if (ctx.mode === 'k') Object.assign(d, { ownerUid: user.uid, taskId: 'k_' + ctx.x.id, org: K.kid });
+  else if (ctx.mode === 'o') {
     Object.assign(d, { ownerUid: user.uid, taskId: ctx.x.id, org: orgUid() });
     if (ctx.x.shareEmail && ctx.x.shareId) Object.assign(d, { assigneeEmail: ctx.x.shareEmail, shareId: ctx.x.shareId });
   } else {
@@ -417,7 +491,8 @@ async function uploadFile(key, kind, file) {
   try {
     await F.addDoc(F.collection(db, 'files'), d);
     toast(t('uploaded'));
-    if (ctx.mode === 'a') updateAssigned(ctx.x.id, { photoAt: Date.now() }, { a: 'photo', m: t(kind) });
+    if (ctx.mode === 'k') { /* invoice photo */ }
+    else if (ctx.mode === 'a') updateAssigned(ctx.x.id, { photoAt: Date.now() }, { a: 'photo', m: t(kind) });
     else { ctx.x.photos = (ctx.x.photos || 0) + 1; touch(ctx.p); save(); renderList(); }
   } catch (e) { console.warn(e); toast(t('uploadErr')); }
 }
@@ -453,9 +528,17 @@ async function resolveOrg() {
   } catch (e) { console.warn('org', e); myOrg = { orgUid: user.uid, role: 'gm' }; }
   orgResolved = true;
   if (isGM()) { syncOrgIndex(); watchOrg(); }
+  watchReports();
+  setTimeout(aiBrief, 2500);
+  kStart();
   save(); renderList();
 }
 let orgSyncTimer = null;
+function headFor(m) {
+  if (m.role === 'head' || m.role === 'manager' || !m.dept) return '';
+  const hd = (state.team || []).find((y) => y !== m && y.role === 'head' && y.dept === m.dept && y.email);
+  return hd ? hd.email.trim().toLowerCase() : '';
+}
 function syncOrgIndex() {
   clearTimeout(orgSyncTimer);
   orgSyncTimer = setTimeout(() => {
@@ -464,7 +547,7 @@ function syncOrgIndex() {
     const now = (state.team || []).filter((m) => m.email).map((m) => m.email.trim().toLowerCase());
     (state.profile.orgSynced || []).filter((e) => !now.includes(e)).forEach((e) => F.deleteDoc(F.doc(db, 'orgIndex', e)).catch(() => {}));
     (state.team || []).filter((m) => m.email).forEach((m) => F.setDoc(F.doc(db, 'orgIndex', m.email.trim().toLowerCase()),
-      { orgUid: user.uid, role: m.role || 'staff', dept: m.dept || '', deptName: dept(m.dept) ? dept(m.dept).name : '', name: m.name || '', gmName: myName() }, { merge: true }).catch((e) => console.warn('orgIndex', e)));
+      { orgUid: user.uid, role: m.role || 'staff', headEmail: headFor(m), dept: m.dept || '', deptName: dept(m.dept) ? dept(m.dept).name : '', name: m.name || '', gmName: myName() }, { merge: true }).catch((e) => console.warn('orgIndex', e)));
     if (JSON.stringify(state.profile.orgSynced || []) !== JSON.stringify(now)) { state.profile.orgSynced = now; save(); }
   }, 1500);
 }
@@ -496,7 +579,7 @@ function openCompany() {
     list.forEach((x) => {
       const isOpen = openOrg === x.id, dk = dueKind(x);
       const li = h('li', null, h('div', { class: 'arow', style: 'cursor:pointer', onclick: () => { openOrg = isOpen ? null : x.id; openCompany(); } },
-        statusTag(x), h('div', { class: 'tbody' }, h('div', { text: (x.urgent ? '🔴 ' : '') + x.text }),
+        statusTag(x), h('div', { class: 'tbody' }, h('div', { text: (x.urgent ? '🔴 ' : '') + trT(x.text) }),
           h('div', { class: 'from', text: '→ ' + (x.assigneeName || x.assigneeEmail) + ' · ' + x.projectName + (x.checks && x.checks.length ? ' · ☑ ' + checkCount(x.checks) : '') + (x.seenAt ? ' · 👁' : '') }),
           x.date ? h('span', { class: 'when ' + dk, text: (dk === 'over' ? t('late') : '') + fmtDue(x) }) : null)));
       if (isOpen) {
@@ -537,6 +620,244 @@ function inviteLink(m) {
   const msg = L.inviteMsg({ name: m.name || '', apk: APK_URL, web: WEB_URL, email: (m.email || '').trim().toLowerCase(), from: (state.profile.name || '').trim() });
   const digits = m.phone ? m.phone.replace(/\D/g, '').replace(/^00/, '') : '';
   return 'https://wa.me/' + digits + '?text=' + encodeURIComponent(msg);
+}
+
+/* ---------------- voice recording → WAV ---------------- */
+function b64(buf) { let s = ''; const b = new Uint8Array(buf); for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s); }
+async function toWav(blob) {
+  const ab = await blob.arrayBuffer();
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = await ctx.decodeAudioData(ab); ctx.close && ctx.close();
+  const rate = 16000, len = Math.max(1, Math.ceil(src.duration * rate));
+  const off = new OfflineAudioContext(1, len, rate);
+  const node = off.createBufferSource(); node.buffer = src; node.connect(off.destination); node.start();
+  const out = (await off.startRendering()).getChannelData(0);
+  const buf = new ArrayBuffer(44 + out.length * 2), v = new DataView(buf);
+  const w = (o, str) => { for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + out.length * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, out.length * 2, true);
+  for (let i = 0; i < out.length; i++) { const x = Math.max(-1, Math.min(1, out[i])); v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true); }
+  return b64(buf);
+}
+function micButton(onAudio) {
+  let rec = null, chunks = [], timer = null, t0 = 0, stream = null;
+  const btn = h('button', { class: 'btn mic', type: 'button', text: '🎙 ' + t('speak') });
+  const stop = () => { if (rec && rec.state !== 'inactive') rec.stop(); };
+  btn.addEventListener('click', async () => {
+    if (rec && rec.state === 'recording') { stop(); return; }
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (e) { toast(t('micDenied')); return; }
+    chunks = []; rec = new MediaRecorder(stream);
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = async () => {
+      clearInterval(timer); stream.getTracks().forEach((tr0) => tr0.stop());
+      btn.classList.remove('rec'); btn.textContent = '⏳ ' + t('aiWorking'); btn.disabled = true;
+      try { const wav = await toWav(new Blob(chunks, { type: rec.mimeType || 'audio/webm' })); await onAudio(wav); }
+      catch (e) { console.warn(e); toast(t('aiFail')); }
+      btn.disabled = false; btn.textContent = '🎙 ' + t('speak');
+    };
+    rec.start(); t0 = Date.now(); btn.classList.add('rec');
+    const tick = () => { const sec = Math.floor((Date.now() - t0) / 1000); btn.textContent = '⏹ ' + t('stopRec') + ' ' + n(Math.floor(sec / 60)) + ':' + n(pad(sec % 60)); if (sec >= 60) stop(); };
+    tick(); timer = setInterval(tick, 500);
+  });
+  return btn;
+}
+const aiReady = () => !!fbApp && aiState !== 'off';
+const LANGNAME = () => ({ ar: 'Egyptian Arabic', en: 'English', me: 'Montenegrin (Latin script)' }[lang]);
+
+/* ---------------- AI: speak or type → tasks ---------------- */
+function inboxProject() {
+  let p = state.projects.find((x) => x.inbox);
+  if (!p) { p = { id: 'p' + uid(), name: t('inboxName'), inbox: true, note: '', noteAt: 0, tasks: [], createdAt: Date.now(), updatedAt: Date.now(), dept: '' }; state.projects.unshift(p); }
+  return p;
+}
+async function aiToTasks(text, wav) {
+  const d = new Date();
+  const ctx = {
+    today: dstr(d), weekday: d.toLocaleDateString('en-GB', { weekday: 'long' }), now: pad(d.getHours()) + ':' + pad(d.getMinutes()),
+    team: (state.team || []).filter((m) => m.name).map((m) => ({ name: m.name, dept: dept(m.dept) ? dept(m.dept).name : '' })),
+    projects: activeProjects().map((p) => ({ name: p.name, dept: dept(p.dept) ? dept(p.dept).name : '' })),
+  };
+  const prompt = 'You turn a manager\'s instructions into tasks for a hotel/restaurant/farm/maintenance company. Context JSON: ' + JSON.stringify(ctx) +
+    '\nExtract every separate task. For each give: text (short task title in the same language the manager used), who (EXACT name from team if mentioned or clearly meant, else ""), project (EXACT name from projects if it fits, else ""), date (YYYY-MM-DD, resolve words like tomorrow/Thursday/after 3 days relative to today, else ""), time (HH:MM 24h or ""), urgent (true/false), checks (array of short sub-steps if listed, else []), brief (extra details or "").' +
+    '\nReply ONLY as JSON: {"tasks":[...]}' + (text ? '\nInstructions:\n' + text : '\nThe instructions are in the attached audio.');
+  const parts = [{ text: prompt }]; if (wav) parts.push({ inlineData: { mimeType: 'audio/wav', data: wav } });
+  const raw = await aiGenerate(parts, true);
+  const j = JSON.parse(raw.replace(/```json|```/g, '').trim());
+  return (j.tasks || []).filter((x) => x && x.text);
+}
+function openVoiceTask(defProject, preset) {
+  let drafts = preset || [];
+  const box = h('div', { class: 'box', role: 'dialog', 'aria-label': t('aiAdd') });
+  const ta = h('textarea', { class: 'field', rows: '3', placeholder: t('aiAddPh') });
+  const run = async (text, wav) => {
+    if (!aiReady()) { toast(t('trOff')); return; }
+    toast(t('aiWorking'));
+    try { drafts = await aiToTasks(text, wav); if (!drafts.length) toast(t('aiNothing')); draw(); }
+    catch (e) { console.warn(e); aiState = e && /not.?found|permission|API|disabled/i.test(String(e.message || e)) ? 'off' : aiState; toast(t('aiFail')); }
+  };
+  const draw = () => {
+    box.replaceChildren(h('h2', { text: t('aiAdd') }));
+    if (!drafts.length) {
+      box.append(h('p', { class: 'muted', text: t('aiAddHint') }), micButton((wav) => run('', wav)), ta,
+        h('div', { class: 'shareline' }, h('button', { class: 'btn solid', type: 'button', text: '✨ ' + t('aiGo'), onclick: () => { const v = ta.value.trim(); if (v) run(v, null); } }),
+          h('button', { class: 'btn ghost', type: 'button', text: t('close'), onclick: closeSheet })));
+      return;
+    }
+    const names = [['', '—'], ...(state.team || []).filter((m) => m.name).map((m) => [m.name, m.name])];
+    const projs = [['', '📥 ' + (defProject ? defProject.name : t('inboxName'))], ...activeProjects().filter((p) => !defProject || p.id !== defProject.id).map((p) => [p.id, p.name])];
+    drafts.forEach((d0) => {
+      if (d0.project && !d0.pid) { const pm = activeProjects().find((p) => norm(p.name) === norm(d0.project)); if (pm) d0.pid = pm.id; }
+      if (d0.who && !names.some(([v]) => v === d0.who)) names.push([d0.who, d0.who]);
+      box.append(h('div', { class: 'member draft' },
+        h('div', { class: 'addt' }, h('input', { class: 'field', value: d0.text, onchange: (e) => { d0.text = e.target.value; } }),
+          h('button', { class: 'del', type: 'button', text: '×', onclick: () => { drafts = drafts.filter((y) => y !== d0); draw(); } })),
+        prop('👤 ' + t('pWho'), selectEl(names, d0.who || '', (v) => { d0.who = v; })),
+        prop('📁 ' + t('project'), selectEl(projs, d0.pid || '', (v) => { d0.pid = v; })),
+        prop('📅 ' + t('pDue'), h('div', { class: 'inline' },
+          h('input', { class: 'field', type: 'date', value: d0.date || '', onchange: (e) => { d0.date = e.target.value; } }),
+          h('input', { class: 'field', type: 'time', value: d0.time || '', onchange: (e) => { d0.time = e.target.value; } }))),
+        prop('⚡ ' + t('pPriority'), selectEl([['', t('normal')], ['u', t('urgent')]], d0.urgent ? 'u' : '', (v) => { d0.urgent = v === 'u'; })),
+        d0.checks && d0.checks.length ? h('p', { class: 'muted', text: '☑ ' + d0.checks.join(' · ') }) : null,
+        d0.brief ? h('p', { class: 'muted', text: '📝 ' + d0.brief }) : null));
+    });
+    box.append(h('div', { class: 'shareline' },
+      h('button', { class: 'btn solid', type: 'button', text: '✓ ' + t('aiSave', n(drafts.length)), onclick: () => {
+        drafts.forEach((d0) => {
+          const p = (d0.pid && find(d0.pid)) || defProject || inboxProject();
+          const nt = { id: uid(), text: d0.text.trim(), s: 0 };
+          if (d0.who) nt.who = d0.who; if (d0.date) nt.date = d0.date; if (d0.time) { nt.time = d0.time; if (!nt.date) nt.date = todayStr(); }
+          if (d0.urgent) nt.urgent = true; if (d0.brief) nt.brief = d0.brief;
+          if (d0.checks && d0.checks.length) nt.checks = d0.checks.map((c) => ({ id: uid(), t: String(c), d: false }));
+          if (d0.fromReport) nt.fromReport = d0.fromReport;
+          if (nt.who) autoShare(nt);
+          p.tasks.push(nt); touch(p);
+          if (d0.fromReport) setReport(d0.fromReport, { status: 'task', taskRef: p.name + ' / ' + nt.text });
+        });
+        save(); closeSheet(); render(); toast(t('aiSaved'));
+      } }),
+      h('button', { class: 'btn', type: 'button', text: '🎙 ' + t('again'), onclick: () => { drafts = []; draw(); } }),
+      h('button', { class: 'btn ghost', type: 'button', text: t('close'), onclick: closeSheet })));
+  };
+  draw(); openSheet(box);
+}
+
+/* ---------------- reports (بلاغات) ---------------- */
+let reportsIn = [], reportsMine = [], repSubs = [];
+const staffMode = () => !!(myOrg && myOrg.role === 'staff' && !isGM() && !state.projects.length);
+const KINDS = { problem: '🔧', request: '🙋', idea: '💡' };
+function watchReports() {
+  repSubs.forEach((f) => f()); repSubs = [];
+  if (!cloud) return;
+  const { F, db, user } = cloud, col = F.collection(db, 'reports');
+  const merge = () => { renderList(); const b = $('inboxBtn'); const nw = reportsIn.filter((r) => r.status === 'new').length; b.hidden = !reportsIn.length; b.textContent = '📥' + (nw ? ' ' + n(nw) : ''); if ($('sheetRoot').querySelector('[data-inbox]')) openInbox(); };
+  let byOrg = [], byHead = [];
+  const combine = () => { const m = {}; [...byOrg, ...byHead].forEach((r) => { m[r.id] = r; }); reportsIn = Object.values(m).sort((a, b) => b.at - a.at); merge(); };
+  if (isGM()) repSubs.push(F.onSnapshot(F.query(col, F.where('org', '==', user.uid)), (sn) => { byOrg = sn.docs.map((d) => ({ id: d.id, ...d.data() })); combine();
+    sn.docChanges().forEach((ch) => { if (ch.type === 'added') { const r = ch.doc.data(); const k = 'r:' + ch.doc.id; if (r.status === 'new' && !notified.has(k)) { markNotified(k); notifyNow(t('newReport', r.fromName || ''), r.title || r.text, {}); } } });
+  }, (e) => console.warn('reports', e)));
+  if (user.email) repSubs.push(F.onSnapshot(F.query(col, F.where('headEmail', '==', user.email.toLowerCase())), (sn) => { byHead = sn.docs.map((d) => ({ id: d.id, ...d.data() })); combine(); }, (e) => console.warn('reports head', e)));
+  repSubs.push(F.onSnapshot(F.query(col, F.where('fromUid', '==', user.uid)), (sn) => { reportsMine = sn.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => b.at - a.at); renderList(); }, (e) => console.warn('reports mine', e)));
+}
+function setReport(id, fields) { if (!cloud) return; cloud.F.updateDoc(cloud.F.doc(cloud.db, 'reports', id), { ...fields, updatedAt: Date.now() }).catch((e) => console.warn(e)); }
+function openReport() {
+  const r = { kind: 'problem', urgent: false, text: '', photo: '' };
+  const box = h('div', { class: 'box', role: 'dialog', 'aria-label': t('report') });
+  const ta = h('textarea', { class: 'field', rows: '3', placeholder: t('reportPh') });
+  let kindRow, urg, photoImg;
+  const drawKinds = () => { kindRow.replaceChildren(); ['problem', 'request', 'idea'].forEach((k) => kindRow.append(h('button', { class: 'chip', type: 'button', 'aria-pressed': r.kind === k ? 'true' : 'false', text: KINDS[k] + ' ' + t('k_' + k), onclick: () => { r.kind = k; drawKinds(); } }))); };
+  kindRow = h('div', { class: 'langs' }); drawKinds();
+  urg = h('input', { type: 'checkbox', onchange: (e) => { r.urgent = e.target.checked; } });
+  photoImg = h('div', { class: 'thumbs' });
+  const pick = () => { const inp = h('input', { type: 'file', accept: 'image/*', style: 'display:none' }); inp.addEventListener('change', async () => { const f = inp.files[0]; inp.remove(); if (!f) return; try { r.photo = await compressImage(f); photoImg.replaceChildren(h('div', { class: 'thumb' }, h('img', { src: r.photo, alt: '' }))); } catch (e) { toast(t('badImage')); } }); document.body.append(inp); inp.click(); };
+  const classify = async (text, wav) => {
+    const prompt = 'A staff member is reporting to their manager. Return JSON {"text": transcript or cleaned text in the SAME language they used, "title": very short title (max 8 words) in that language, "kind": "problem"|"request"|"idea", "urgent": true|false}.' + (text ? '\nReport:\n' + text : '\nThe report is in the attached audio.');
+    const parts = [{ text: prompt }]; if (wav) parts.push({ inlineData: { mimeType: 'audio/wav', data: wav } });
+    return JSON.parse((await aiGenerate(parts, true)).replace(/```json|```/g, '').trim());
+  };
+  const mic = micButton(async (wav) => {
+    if (!aiReady()) { toast(t('trOff')); return; }
+    try { const j = await classify('', wav); ta.value = j.text || ''; r.title = j.title || ''; if (KINDS[j.kind]) r.kind = j.kind; r.urgent = !!j.urgent; urg.checked = r.urgent; drawKinds(); }
+    catch (e) { console.warn(e); toast(t('aiFail')); }
+  });
+  const send = h('button', { class: 'btn solid', type: 'button', text: '📤 ' + t('send'), onclick: async () => {
+    r.text = ta.value.trim(); if (!r.text && !r.photo) { toast(t('reportEmpty')); return; }
+    send.disabled = true;
+    if (r.text && !r.title && aiReady()) { try { const j = await classify(r.text, null); r.title = j.title || ''; if (KINDS[j.kind] && r.kind === 'problem') r.kind = j.kind; if (j.urgent) r.urgent = true; } catch (e) {} }
+    const { F, db, user } = cloud;
+    const doc = { fromUid: user.uid, fromEmail: (user.email || '').toLowerCase(), fromName: myName(), org: myOrg ? myOrg.orgUid : '', headEmail: (myOrg && myOrg.headEmail) || '', dept: (myOrg && myOrg.deptName) || '',
+      kind: r.kind, urgent: r.urgent, title: r.title || '', text: r.text, photo: r.photo || '', status: 'new', at: Date.now(), updatedAt: Date.now(), lang };
+    try { await F.addDoc(F.collection(db, 'reports'), doc); closeSheet(); toast(t('reportSent')); } catch (e) { console.warn(e); toast(t('uploadErr')); send.disabled = false; }
+  } });
+  box.append(h('h2', { text: '🙋 ' + t('report') }), h('p', { class: 'muted', text: t('reportHint') }), mic, ta, kindRow,
+    h('label', { class: 'check' }, urg, t('urgent')),
+    h('div', { class: 'shareline' }, h('button', { class: 'btn', type: 'button', text: '📷 ' + t('addPhoto'), onclick: pick }), photoImg),
+    h('div', { class: 'shareline' }, send, h('button', { class: 'btn ghost', type: 'button', text: t('close'), onclick: closeSheet })));
+  openSheet(box);
+}
+const ST_R = () => ({ new: t('rNew'), seen: t('rSeen'), task: t('rTask'), done: t('rDone') });
+function openInbox() {
+  const box = h('div', { class: 'box', role: 'dialog', 'aria-label': t('inbox'), 'data-inbox': '1' });
+  box.append(h('h2', { text: '📥 ' + t('inbox') }));
+  if (!reportsIn.length) box.append(h('p', { class: 'muted', text: t('inboxEmpty') }));
+  reportsIn.forEach((r) => {
+    if (r.status === 'new') setReport(r.id, { status: 'seen' });
+    const rep = h('input', { class: 'field', placeholder: t('replyPh'), value: r.reply || '' });
+    box.append(h('div', { class: 'member' + (r.status === 'done' ? ' muted' : '') },
+      h('div', { class: 'shareline' }, h('b', { text: KINDS[r.kind] + ' ' + (r.urgent ? '🔴 ' : '') + trT(r.title || r.text.slice(0, 60)) })),
+      h('div', { class: 'from', text: (r.fromName || r.fromEmail) + (r.dept ? ' · ' + r.dept : '') + ' · ' + fmtTs(r.at) + ' · ' + ST_R()[r.status] }),
+      r.text && r.title ? h('p', { class: 'brief', text: trT(r.text) }) : null,
+      r.photo ? h('button', { class: 'thumb', type: 'button', style: 'width:96px', onclick: () => viewFile({ data: r.photo, kind: 'before', byName: r.fromName, at: r.at, id: '' }) }, h('img', { src: r.photo, alt: '' })) : null,
+      r.taskRef ? h('p', { class: 'kind ok', text: '↪ ' + r.taskRef }) : null,
+      h('div', { class: 'addt' }, rep, h('button', { class: 'btn', type: 'button', text: t('send'), onclick: () => { setReport(r.id, { reply: rep.value.trim() }); toast('✓'); } })),
+      r.status !== 'done' ? h('div', { class: 'shareline' },
+        r.status !== 'task' ? h('button', { class: 'btn solid', type: 'button', text: '↪ ' + t('toTask'), onclick: () => { closeSheet(); openVoiceTask(null, [{ text: r.title || r.text, brief: r.title ? r.text : '', urgent: !!r.urgent, fromReport: r.id }]); } }) : null,
+        h('button', { class: 'btn', type: 'button', text: '✓ ' + t('rDone'), onclick: () => setReport(r.id, { status: 'done' }) })) : null));
+  });
+  box.append(h('button', { class: 'btn ghost', text: t('close'), onclick: closeSheet }));
+  openSheet(box);
+}
+function renderReportsBox() {
+  const el = $('reports'); el.replaceChildren();
+  const canReport = !!(cloud && myOrg && !isGM());
+  el.hidden = !canReport && !staffMode();
+  document.body.classList.toggle('staff', staffMode());
+  if (el.hidden) return;
+  el.append(h('button', { class: 'btn solid big', type: 'button', text: '🙋 ' + t('report'), onclick: openReport }));
+  if (reportsMine.length) {
+    const ul = h('ul', { class: 'assigned' });
+    reportsMine.slice(0, 8).forEach((r) => ul.append(h('li', null, h('div', { text: KINDS[r.kind] + ' ' + (r.title || r.text.slice(0, 60)) }),
+      h('div', { class: 'from', text: fmtTs(r.at) + ' · ' + ST_R()[r.status] + (r.taskRef ? ' · ↪' : '') }),
+      r.reply ? h('div', { class: 'rep', text: '💬 ' + trT(r.reply) }) : null)));
+    el.append(h('h3', { text: t('myReports') }), ul);
+  }
+  if (staffMode() && !toMe.filter((x) => x.s !== 2).length) el.append(h('p', { class: 'empty', text: t('noTasksStaff') }));
+}
+
+/* ---------------- AI morning brief ---------------- */
+async function aiBrief(force) {
+  const el = $('brief'); if (!el) return;
+  const key = 'mashari3-brief', today = todayStr();
+  let cached = null; try { cached = JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) {}
+  const show = (txt) => { el.replaceChildren(h('div', { class: 'shareline' }, h('b', { text: '☀️ ' + t('briefTitle') }), h('button', { class: 'iconbtn', type: 'button', text: '↻', 'aria-label': 'refresh', onclick: () => aiBrief(true) })), h('p', { text: txt })); el.hidden = false; };
+  if (staffMode() || state.profile.aiBrief === false) { el.hidden = true; return; }
+  if (!force && cached && cached.date === today && cached.lang === lang) { show(cached.text); return; }
+  if (!aiReady() || (!force && new Date().getHours() < 5)) { el.hidden = true; return; }
+  const data = { today, overdue: [], dueToday: [], reviews: [], followUps: [], newReports: reportsIn.filter((r) => r.status === 'new').map((r) => (r.fromName || '') + ': ' + (r.title || r.text).slice(0, 80)) };
+  allTasks().forEach(({ p, t: x }) => {
+    const line = x.text + (x.who ? ' (' + x.who + ')' : '') + ' [' + p.name + ']';
+    if (x.s !== 2 && dueKind(x) === 'over') data.overdue.push(line);
+    if (x.s !== 2 && x.date === today) data.dueToday.push(line);
+    if (x.s === 2 && x.review === 'pending') data.reviews.push(line);
+    if (x.s !== 2 && x.follow && dstr(new Date(x.follow)) <= today) data.followUps.push(line);
+  });
+  orgTasks.forEach((x) => { if (x.s !== 2 && dueKind(x) === 'over') data.overdue.push(x.text + ' (' + (x.assigneeName || '') + ', ' + t('fromX', x.ownerName || '') + ')'); });
+  if (!data.overdue.length && !data.dueToday.length && !data.reviews.length && !data.followUps.length && !data.newReports.length) { el.hidden = true; return; }
+  try {
+    const txt = (await aiGenerate('You are an operations assistant for a business owner. Write a morning brief in ' + LANGNAME() + ', max 4 short lines, most important first: who is late, what needs his review, what is due today, new staff reports. Be specific with names. No greetings, no markdown.\nData: ' + JSON.stringify(data))).trim();
+    try { localStorage.setItem(key, JSON.stringify({ date: today, lang, text: txt })); } catch (e) {}
+    show(txt);
+  } catch (e) { console.warn('brief', e); el.hidden = true; }
 }
 
 /* ---------------- WhatsApp ---------------- */
@@ -583,6 +904,11 @@ function reminders() {
     const at = dueTs(x);
     if (at > now) out.push({ key: 'a:' + x.id + ':' + x.date + (x.time || ''), at, aid: x.id, title: t('notifAssigned', x.ownerName || ''), body: x.text + ' · ' + x.projectName });
   });
+  K.batches.forEach((b) => {
+    if (!b.exp || b.status !== 'in') return;
+    const d = new Date(b.exp + 'T09:00'); d.setDate(d.getDate() - 1);
+    if (d.getTime() > now && d.getTime() < now + 8 * DAY) out.push({ key: 'kx:' + b.id + b.exp, at: d.getTime(), title: t('k_notifExp'), body: b.name + ' · ' + b.qty + ' ' + kl('units', b.unit) + ' · ' + t('k_expTomorrow') });
+  });
   const main = out.sort((a, b) => a.at - b.at).slice(0, 50);
   if (state.profile.digest !== false) {
     for (let i = 0; i < 7; i++) {
@@ -592,6 +918,7 @@ function reminders() {
       let c = 0;
       allTasks().forEach(({ t: x }) => { if (x.s !== 2 && (x.date === ds || (x.follow && dstr(new Date(x.follow)) === ds))) c++; });
       toMe.forEach((x) => { if (x.s !== 2 && x.date === ds) c++; });
+      K.batches.forEach((b) => { if (b.exp && b.exp <= ds && b.status === 'in') c++; });
       const over = i === 0 ? allTasks().filter(({ t: x }) => dueKind(x) === 'over').length : 0;
       if (c || over) main.push({ key: 'digest:' + ds + ':' + c + ':' + over, at: d.getTime(), title: t('digestTitle'), body: t('digestBody', n(c), n(over)) });
     }
@@ -652,6 +979,7 @@ if (isNative && CAP.registerPlugin) {
   const AppP = CAP.registerPlugin('App');
   AppP.addListener('backButton', () => {
     if ($('sheetRoot').firstChild) { closeSheet(); return; }
+    if (K.on) { kClose(); return; }
     if (selected) { goHome(); return; }
     if (query) { query = ''; $('q').value = ''; renderList(); return; }
     AppP.exitApp();
@@ -786,8 +1114,8 @@ function renderMine() {
     const li = h('li', { id: 'a-' + x.id },
       h('div', { class: 'arow' }, st,
         h('div', { class: 'tbody', onclick: () => { openAssigned = isOpen ? null : x.id; renderList(); } },
-          h('div', { text: (x.urgent ? '🔴 ' : '') + x.text }),
-          h('div', { class: 'from', text: t('fromX', x.ownerName || x.ownerEmail) + ' · ' + x.projectName + (x.kind === 'm' ? ' · ' + STG()[x.stage || 0] : '') + (cc ? ' · ☑ ' + cc : '') }),
+          h('div', { text: (x.urgent ? '🔴 ' : '') + trT(x.text) }),
+          h('div', { class: 'from', text: t('fromX', x.ownerName || x.ownerEmail) + ' · ' + trT(x.projectName) + (x.kind === 'm' ? ' · ' + STG()[x.stage || 0] : '') + (cc ? ' · ☑ ' + cc : '') }),
           x.date ? h('span', { class: 'when ' + dk, text: (dk === 'over' ? t('late') : '') + fmtDue(x) }) : null)));
     if (isOpen) {
       galCtx['a:' + x.id] = { mode: 'a', x }; watchFiles('a:' + x.id);
@@ -797,7 +1125,8 @@ function renderMine() {
       } else {
         box.append(prop('📌 ' + t('pStatus'), selectEl([['0', t('sTodo')], ['1', t('sDoing')], ['2', t('sDone')]], String(x.s || 0), (v) => setS(x, +v))));
       }
-      if (x.brief) box.append(h('p', { class: 'brief', text: x.brief }));
+      box.append(origLine(x.text) || '');
+      if (x.brief) box.append(h('p', { class: 'brief', text: trT(x.brief) }), origLine(x.brief) || '');
       if (x.checks && x.checks.length) box.append(section('a' + x.id + ':c', t('checklist'), cc, checklistView(x.checks, false, (c) => { x.checks = c; updateAssigned(x.id, { checks: c }); renderList(); }), true));
       box.append(section('a' + x.id + ':p', t('photos'), '', gallery('a:' + x.id), false));
       const am = (x.log || []).filter((e) => e.a === 'msg').length;
@@ -880,7 +1209,7 @@ function projectCard(p) {
 }
 function renderList() {
   document.body.classList.toggle('show-detail', !!selected);
-  renderDepts(); renderPeople(); renderResults(); renderMine(); renderSoon();
+  renderReportsBox(); renderDepts(); renderPeople(); renderResults(); renderMine(); renderSoon();
   const doing = allTasksF().filter(({ t: x }) => x.s === 1 && x.kind !== 'm');
   nowEl.hidden = !doing.length; nowEl.replaceChildren();
   if (doing.length) {
@@ -1090,7 +1419,7 @@ function renderDetail() {
     if (nt.who) autoShare(nt);
     p.tasks.push(nt); touch(p); save(); render();
     const f = detail.querySelector('.addt input'); if (f) f.focus();
-  } }, addIn, h('button', { class: 'btn', type: 'submit', text: t('add') })));
+  } }, addIn, h('button', { class: 'btn', type: 'button', text: '🎙', title: t('aiAdd'), 'aria-label': t('aiAdd'), onclick: () => openVoiceTask(p) }), h('button', { class: 'btn', type: 'submit', text: t('add') })));
   detail.append(h('details', { class: 'legend help' }, h('summary', { text: '❓ ' + t('helpTitle') }), h('p', { text: t('legend') }), h('p', { text: t('quickHint') })));
 
   if (closed.length) {
@@ -1212,6 +1541,8 @@ function openDash() {
   openSheet(box);
 }
 $('dashBtn').addEventListener('click', openDash);
+$('inboxBtn').addEventListener('click', openInbox);
+$('aiBtn').addEventListener('click', () => openVoiceTask(null));
 $('orgBtn').addEventListener('click', () => { openOrg = null; openCompany(); });
 
 /* ---------------- departments sheet ---------------- */
@@ -1261,6 +1592,13 @@ function openSettings() {
 
   box.append(h('button', { class: 'btn', text: t('team') + ' (' + n((state.team || []).length) + ')', onclick: openTeam }));
   box.append(h('button', { class: 'btn', text: t('depts') + ' (' + n(state.depts.length) + ')', onclick: openDepts }));
+  const trc = h('input', { type: 'checkbox', onchange: (e) => { state.profile.translate = e.target.checked; save(); render(); } });
+  trc.checked = trOn();
+  box.append(h('label', { class: 'check' }, trc, t('trToggle')));
+  if (aiState === 'off') box.append(h('p', { class: 'muted', text: t('trOff') }));
+  const ab = h('input', { type: 'checkbox', onchange: (e) => { state.profile.aiBrief = e.target.checked; save(); aiBrief(); } });
+  ab.checked = state.profile.aiBrief !== false;
+  box.append(h('label', { class: 'check' }, ab, t('briefToggle')));
   const dg = h('input', { type: 'checkbox', onchange: (e) => { state.profile.digest = e.target.checked; save(); } });
   dg.checked = state.profile.digest !== false;
   box.append(h('label', { class: 'check' }, dg, t('digestToggle')));
@@ -1317,6 +1655,7 @@ function openTeam(fresh) {
         state.depts.forEach((d) => { const o = h('option', { value: d.id, text: d.icon + ' ' + d.name }); if (m.dept === d.id) o.selected = true; sel.append(o); });
         return sel; })(),
       selectEl(['staff', 'head', 'manager'].map((r, i) => [r, '🎖 ' + t('roles')[i]]), m.role || 'staff', (v) => { m.role = v; save(); syncOrgIndex(); }),
+      (() => { const c = h('input', { type: 'checkbox', onchange: (e) => { m.kitchen = e.target.checked; save(); syncOrgIndex(); } }); c.checked = !!m.kitchen; return h('label', { class: 'check' }, c, t('k_access')); })(),
       (() => { const sel = h('select', { class: 'field', 'aria-label': t('language'), onchange: (e) => { m.lang = e.target.value; save(); } });
         ['ar', 'en', 'me'].forEach((l) => { const o = h('option', { value: l, text: '🌐 ' + window.L[l].langName }); if ((m.lang || lang) === l) o.selected = true; sel.append(o); });
         return sel; })(),
@@ -1368,7 +1707,7 @@ async function startCloud() {
   let A, F, app;
   try {
     const [core, a, f] = await Promise.all([import(FB + 'firebase-app.js'), import(FB + 'firebase-auth.js'), import(FB + 'firebase-firestore.js')]);
-    A = a; F = f; app = core.initializeApp(CFG);
+    A = a; F = f; app = core.initializeApp(CFG); fbApp = app;
   } catch (e) {
     console.warn(e); loadLocal(); showApp(); render(); setSync('offline');
     setBanner('bannerNoServer'); return;
@@ -1395,7 +1734,7 @@ async function startCloud() {
     if (unsub) { unsub(); unsub = null; }
     if (unsubShared) { unsubShared(); unsubShared = null; }
     toMe = []; ownerSharedReady = false;
-    if (!user) { cloud = null; state = { projects: [], team: [], profile: {} }; showLogin(); return; }
+    if (!user) { kStop(); myOrg = null; orgResolved = false; cloud = null; state = { projects: [], team: [], profile: {} }; showLogin(); return; }
     const ref = F.doc(db, 'users', user.uid, 'data', 'board');
     cloud = { db, F, ref, user, signOut: () => { try { localStorage.removeItem(LKEY); } catch (e) {} return A.signOut(auth); } };
     loadLocal(); showApp(); render();
@@ -1414,6 +1753,385 @@ async function startCloud() {
 window.addEventListener('online', () => { if (cloud) setSync('ok'); });
 window.addEventListener('offline', () => setSync('offline'));
 setInterval(() => { const a = document.activeElement; if (!(a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA'))) renderList(); }, 60000);
+
+/* =====================================================================
+   🍽 تشغيل المطبخ: الموردين، الأصناف، الطلبيات، الاستلام، الصلاحية، الهالك
+   ===================================================================== */
+const K = { on: false, kid: '', tab: 'stock', items: [], suppliers: [], orders: [], batches: [], waste: [], unsubs: [], open: null, cat: '', q: '' };
+const KCOLS = ['items', 'suppliers', 'orders', 'batches', 'waste'];
+const kAccess = () => !!(cloud && myOrg && (isGM() || myOrg.kitchen));
+const kRef = (col, id) => cloud.F.doc(cloud.db, 'kitchens', K.kid, col, id);
+const kCol = (col) => cloud.F.collection(cloud.db, 'kitchens', K.kid, col);
+const kItem = (id) => K.items.find((x) => x.id === id);
+const kSup = (id) => K.suppliers.find((x) => x.id === id);
+const money = (v) => (v || v === 0) && !isNaN(v) ? (Math.round(v * 100) / 100).toLocaleString(loc()) + ' ' + (state.profile.currency || '€') : '';
+const KCATS = ['veg', 'meat', 'fish', 'dairy', 'dry', 'drinks', 'clean', 'pack'];
+const KSTOR = ['fridge', 'freezer', 'dry'];
+const KUNITS = ['kg', 'g', 'L', 'pcs', 'box', 'pack'];
+const KWASTE = ['expired', 'damaged', 'overprod', 'dropped', 'other'];
+const kl = (group, id) => (t('k_' + group) || {})[id] || id;
+function kErr(e) { console.warn('kitchen', e); toast(t('syncErr')); }
+
+function kStart() {
+  if (!kAccess() || K.kid) return;
+  K.kid = myOrg.orgUid;
+  const { F } = cloud;
+  const since = Date.now() - 60 * DAY;
+  KCOLS.forEach((c) => {
+    const q = c === 'orders' ? F.query(kCol(c), F.where('createdAt', '>=', since))
+      : c === 'waste' ? F.query(kCol(c), F.where('at', '>=', since))
+      : c === 'batches' ? F.query(kCol(c), F.where('status', '==', 'in')) : kCol(c);
+    K.unsubs.push(F.onSnapshot(q, (snap) => {
+      K[c] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      if (K.on) kRender();
+      if (c === 'batches') scheduleNotifs();
+    }, kErr));
+  });
+  $('kitchenBtn').hidden = false;
+}
+function kStop() { K.unsubs.forEach((f) => f()); K.unsubs = []; K.kid = ''; K.on = false; document.body.classList.remove('kmode'); $('kitchenBtn').hidden = true; }
+
+function kOpen() { K.on = true; document.body.classList.add('kmode'); kRender(); window.scrollTo({ top: 0 }); }
+function kClose() { K.on = false; K.open = null; document.body.classList.remove('kmode'); render(); }
+
+const expDays = (b) => Math.round((new Date(b.exp + 'T12:00') - new Date(todayStr() + 'T12:00')) / DAY);
+function expClass(b) { const d = expDays(b); return d < 0 ? 'bad' : d <= 1 ? 'warn' : d <= 3 ? 'soon' : ''; }
+function expText(b) {
+  const d = expDays(b);
+  if (d < 0) return t('k_expired', n(-d));
+  if (d === 0) return t('k_expToday');
+  if (d === 1) return t('k_expTomorrow');
+  return t('k_expIn', n(d));
+}
+const lowItems = () => K.items.filter((x) => (x.par || 0) > 0 && (x.stock || 0) < x.par);
+
+function kRender() {
+  const el = $('kitchen'); el.replaceChildren();
+  el.append(h('div', { class: 'khead' },
+    h('button', { class: 'btn ghost', onclick: kClose, text: t('back') }),
+    h('h2', { text: t('k_title') })));
+  const expSoon = K.batches.filter((b) => b.exp && expDays(b) <= 1).length;
+  const tabs = [['stock', '📦 ' + t('k_stock'), lowItems().length], ['orders', '🧾 ' + t('k_orders'), K.orders.filter((o) => o.status === 'draft').length],
+    ['receive', '📥 ' + t('k_receive'), K.orders.filter((o) => o.status === 'sent').length], ['expiry', '⏳ ' + t('k_expiry'), expSoon],
+    ['waste', '🗑 ' + t('k_waste'), 0], ['suppliers', '🚚 ' + t('k_suppliers'), 0]];
+  const tb = h('div', { class: 'people ktabs' });
+  tabs.forEach(([id, l, c]) => tb.append(h('button', { class: 'chip', 'aria-pressed': K.tab === id ? 'true' : 'false', onclick: () => { K.tab = id; K.open = null; kRender(); } }, l, c ? h('b', { text: n(c) }) : null)));
+  el.append(tb);
+  const body = h('div', { class: 'kbody' });
+  ({ stock: kStock, orders: kOrders, receive: kReceive, expiry: kExpiry, waste: kWaste, suppliers: kSuppliers })[K.tab](body);
+  el.append(body);
+}
+
+/* ---------- 📦 المخزون ---------- */
+function kStock(body) {
+  const low = lowItems();
+  if (low.length) body.append(h('div', { class: 'next' }, h('span', { text: t('k_lowN', n(low.length)) }),
+    h('button', { class: 'btn solid', type: 'button', text: t('k_makeOrders'), onclick: kAutoOrders })));
+  const top = h('div', { class: 'shareline' },
+    h('input', { class: 'field', style: 'flex:1;min-width:140px', type: 'search', placeholder: t('k_search'), value: K.q, oninput: (e) => { K.q = e.target.value; const f = body.querySelector('.klist'); if (f) f.replaceWith(list()); } }),
+    selectEl([['', t('allDepts')], ...KCATS.map((c) => [c, kl('cats', c)])], K.cat, (v) => { K.cat = v; kRender(); }),
+    h('button', { class: 'btn solid', type: 'button', text: '+ ' + t('k_item'), onclick: async () => {
+      const r = await cloud.F.addDoc(kCol('items'), { name: '', unit: 'kg', cat: K.cat || 'veg', storage: 'fridge', par: 0, stock: 0, shelf: 3, price: 0, supplierId: '' }).catch(kErr);
+      if (r) { K.open = r.id; }
+    } }));
+  body.append(top);
+  const list = () => {
+    const ul = h('ul', { class: 'klist' });
+    const q = norm(K.q);
+    K.items.filter((x) => (!K.cat || x.cat === K.cat) && (!q || norm(x.name).includes(q)))
+      .sort((a, b) => ((b.par && b.stock < b.par) - (a.par && a.stock < a.par)) || (a.name || '').localeCompare(b.name || ''))
+      .forEach((x) => ul.append(kItemRow(x)));
+    if (!ul.firstChild) ul.append(h('li', { class: 'muted', text: t('k_noItems') }));
+    return ul;
+  };
+  body.append(list());
+}
+function kItemRow(x) {
+  const isLow = x.par > 0 && (x.stock || 0) < x.par, isOpen = K.open === x.id;
+  const upd = (f) => cloud.F.updateDoc(kRef('items', x.id), f).catch(kErr);
+  const step = x.unit === 'g' ? 100 : x.unit === 'kg' || x.unit === 'L' ? 0.5 : 1;
+  const li = h('li', { class: 'krow' + (isLow ? ' low' : '') },
+    h('div', { class: 'kmain', onclick: () => { K.open = isOpen ? null : x.id; kRender(); } },
+      h('div', null, h('b', { text: x.name || '—' }), h('small', { class: 'from', text: ' ' + kl('stor', x.storage).split(' ')[0] + (kSup(x.supplierId) ? ' · ' + kSup(x.supplierId).name : '') })),
+      h('span', { class: 'kqty' + (isLow ? ' bad' : ''), text: n(+(x.stock || 0)) + ' / ' + n(+(x.par || 0)) + ' ' + kl('units', x.unit) })),
+    h('div', { class: 'kstep' },
+      h('button', { class: 'btn', type: 'button', text: '−', 'aria-label': '−', onclick: () => upd({ stock: Math.max(0, Math.round(((x.stock || 0) - step) * 100) / 100) }) }),
+      h('button', { class: 'btn', type: 'button', text: '+', 'aria-label': '+', onclick: () => upd({ stock: Math.round(((x.stock || 0) + step) * 100) / 100 }) })));
+  if (isOpen) {
+    const num = (k, label) => h('label', null, label, h('input', { class: 'field', type: 'number', inputmode: 'decimal', step: 'any', value: x[k] || 0, onchange: (e) => upd({ [k]: +e.target.value || 0 }) }));
+    li.append(h('div', { class: 'tedit' },
+      h('label', null, t('k_name'), h('input', { class: 'field', value: x.name || '', onchange: (e) => upd({ name: e.target.value.trim() }) })),
+      h('div', { class: 'row' }, num('stock', t('k_inStock')), num('par', t('k_par'))),
+      h('div', { class: 'row' },
+        prop(t('k_unit'), selectEl(KUNITS.map((u) => [u, kl('units', u)]), x.unit || 'kg', (v) => upd({ unit: v }))),
+        prop(t('k_cat'), selectEl(KCATS.map((c) => [c, kl('cats', c)]), x.cat || 'veg', (v) => upd({ cat: v })))),
+      h('div', { class: 'row' },
+        prop(t('k_storage'), selectEl(KSTOR.map((c) => [c, kl('stor', c)]), x.storage || 'fridge', (v) => upd({ storage: v }))),
+        prop(t('k_supplier'), selectEl([['', '—'], ...K.suppliers.map((sp) => [sp.id, sp.name])], x.supplierId || '', (v) => upd({ supplierId: v })))),
+      h('div', { class: 'row' }, num('shelf', t('k_shelf')), num('price', t('k_price', state.profile.currency || '€'))),
+      h('button', { class: 'btn danger', type: 'button', text: t('remove'), onclick: () => { if (confirmTwice(li)) cloud.F.deleteDoc(kRef('items', x.id)).catch(kErr); } })));
+  }
+  return li;
+}
+function confirmTwice(el) { if (el.dataset.arm) return true; el.dataset.arm = '1'; toast(t('sure')); setTimeout(() => delete el.dataset.arm, 3500); return false; }
+
+async function kAutoOrders() {
+  const bySup = {};
+  lowItems().forEach((x) => { const k = x.supplierId || ''; (bySup[k] = bySup[k] || []).push(x); });
+  const { F } = cloud;
+  let made = 0;
+  for (const [sid, items] of Object.entries(bySup)) {
+    const existing = K.orders.find((o) => o.status === 'draft' && (o.supplierId || '') === sid);
+    const lines = items.map((x) => ({ itemId: x.id, name: x.name, unit: x.unit, qty: Math.ceil(((x.par || 0) - (x.stock || 0)) * 100) / 100, price: x.price || 0 }));
+    if (existing) {
+      const ids = new Set(existing.lines.map((l) => l.itemId));
+      await F.updateDoc(kRef('orders', existing.id), { lines: [...existing.lines, ...lines.filter((l) => !ids.has(l.itemId))] }).catch(kErr);
+    } else {
+      await F.addDoc(kCol('orders'), { supplierId: sid, lines, status: 'draft', createdAt: Date.now(), by: myName(), note: '', deliver: '' }).catch(kErr);
+    }
+    made++;
+  }
+  toast(t('k_ordersMade', n(made))); K.tab = 'orders'; kRender();
+}
+
+/* ---------- 🧾 الطلبيات ---------- */
+const orderTotal = (o) => (o.lines || []).reduce((a, l) => a + (+l.qty || 0) * (+l.price || 0), 0);
+function kOrders(body) {
+  body.append(h('div', { class: 'shareline' },
+    selectEl([['', '+ ' + t('k_newOrder')], ...K.suppliers.map((sp) => [sp.id, '🚚 ' + sp.name])], '', async (sid) => {
+      if (!sid) return;
+      const lines = K.items.filter((x) => x.supplierId === sid).map((x) => ({ itemId: x.id, name: x.name, unit: x.unit, qty: x.par && x.stock < x.par ? Math.ceil((x.par - (x.stock || 0)) * 100) / 100 : 0, price: x.price || 0 }));
+      const r = await cloud.F.addDoc(kCol('orders'), { supplierId: sid, lines, status: 'draft', createdAt: Date.now(), by: myName(), note: '', deliver: '' }).catch(kErr);
+      if (r) { K.open = r.id; kRender(); }
+    }),
+    lowItems().length ? h('button', { class: 'btn', type: 'button', text: t('k_makeOrders'), onclick: kAutoOrders }) : null));
+  const groups = [['draft', t('k_drafts')], ['sent', t('k_sent')], ['partial', t('k_partial')], ['received', t('k_received')]];
+  groups.forEach(([st, label]) => {
+    const list = K.orders.filter((o) => o.status === st).sort((a, b) => b.createdAt - a.createdAt);
+    if (!list.length) return;
+    body.append(h('div', { class: 'subhead', text: label + ' (' + n(list.length) + ')' }));
+    const ul = h('ul', { class: 'klist' });
+    list.slice(0, st === 'received' ? 15 : 50).forEach((o) => ul.append(kOrderRow(o)));
+    body.append(ul);
+  });
+  if (!K.orders.length) body.append(h('p', { class: 'muted', text: t('k_noOrders') }));
+}
+function kOrderRow(o) {
+  const sp = kSup(o.supplierId), isOpen = K.open === o.id, tot = orderTotal(o);
+  const upd = (f) => cloud.F.updateDoc(kRef('orders', o.id), f).catch(kErr);
+  const li = h('li', { class: 'krow' },
+    h('div', { class: 'kmain', onclick: () => { K.open = isOpen ? null : o.id; kRender(); } },
+      h('div', null, h('b', { text: (sp ? sp.name : t('k_noSupplier')) }), h('small', { class: 'from', text: ' · ' + n((o.lines || []).filter((l) => +l.qty > 0).length) + ' ' + t('k_lines') + ' · ' + fmtTs(o.sentAt || o.createdAt, false) })),
+      h('span', { class: 'kqty', text: money(tot) })));
+  if (!isOpen) return li;
+  const box = h('div', { class: 'tedit' });
+  const editable = o.status === 'draft';
+  (o.lines || []).forEach((l, i) => box.append(h('div', { class: 'kline' },
+    h('span', { text: l.name }),
+    editable ? h('input', { class: 'field', type: 'number', inputmode: 'decimal', step: 'any', value: l.qty, onchange: (e) => { const lines = o.lines.slice(); lines[i] = { ...l, qty: +e.target.value || 0 }; upd({ lines }); } }) : h('span', { text: n(+l.qty) }),
+    h('small', { text: kl('units', l.unit) }),
+    editable ? h('button', { class: 'del', type: 'button', text: '×', onclick: () => upd({ lines: o.lines.filter((_, j) => j !== i) }) }) : h('small', { text: l.rec != null ? '📥 ' + n(+l.rec) + (l.ok === false ? ' ✗' : '') : '' }))));
+  if (editable) {
+    const avail = K.items.filter((x) => !(o.lines || []).some((l) => l.itemId === x.id));
+    box.append(selectEl([['', '+ ' + t('k_addLine')], ...avail.map((x) => [x.id, x.name])], '', (v) => { const x = kItem(v); if (x) upd({ lines: [...(o.lines || []), { itemId: x.id, name: x.name, unit: x.unit, qty: 1, price: x.price || 0 }] }); }));
+    box.append(h('div', { class: 'row' },
+      h('label', null, t('k_deliver'), h('input', { class: 'field', type: 'date', value: o.deliver || '', onchange: (e) => upd({ deliver: e.target.value }) })),
+      h('label', null, t('k_note'), h('input', { class: 'field', value: o.note || '', onchange: (e) => upd({ note: e.target.value.trim() }) }))));
+    box.append(h('div', { class: 'shareline' },
+      h('button', { class: 'btn wa', type: 'button', text: t('k_sendWA'), onclick: () => { openExternal(kOrderWA(o)); upd({ status: 'sent', sentAt: Date.now(), sentBy: myName() }); } }),
+      h('button', { class: 'btn', type: 'button', text: t('k_markSent'), onclick: () => upd({ status: 'sent', sentAt: Date.now(), sentBy: myName() }) }),
+      h('button', { class: 'btn danger', type: 'button', text: t('remove'), onclick: () => { if (confirmTwice(box)) cloud.F.deleteDoc(kRef('orders', o.id)).catch(kErr); } })));
+  } else if (o.status === 'sent') {
+    box.append(h('div', { class: 'shareline' },
+      h('button', { class: 'btn solid', type: 'button', text: '📥 ' + t('k_receiveNow'), onclick: () => { K.tab = 'receive'; K.open = o.id; kRender(); } }),
+      h('button', { class: 'btn wa', type: 'button', text: t('k_sendWA'), onclick: () => openExternal(kOrderWA(o)) })));
+  } else {
+    box.append(h('p', { class: 'muted', text: t('k_recBy', o.recBy || '', fmtTs(o.recAt || o.createdAt)) }));
+    const key = 'k:' + o.id; galCtx[key] = { mode: 'k', x: o }; watchFiles(key); box.append(gallery(key));
+  }
+  li.append(box);
+  return li;
+}
+function kOrderWA(o) {
+  const sp = kSup(o.supplierId);
+  const L = window.L[(sp && sp.lang) || lang] || window.L[lang];
+  const lines = (o.lines || []).filter((l) => +l.qty > 0).map((l) => '• ' + l.name + ': ' + l.qty + ' ' + ((L.k_units || {})[l.unit] || l.unit));
+  const msg = [L.k_waHead(state.profile.business || state.profile.name || ''), ...lines,
+    o.deliver ? L.k_waDeliver(new Date(o.deliver + 'T12:00').toLocaleDateString(L.locale, { weekday: 'long', day: 'numeric', month: 'long' })) : '',
+    o.note ? '📝 ' + o.note : '', L.k_waThanks].filter(Boolean).join('\n');
+  const digits = sp && sp.phone ? sp.phone.replace(/\D/g, '').replace(/^00/, '') : '';
+  return 'https://wa.me/' + digits + '?text=' + encodeURIComponent(msg);
+}
+
+/* ---------- 📥 الاستلام ---------- */
+function kReceive(body) {
+  const pending = K.orders.filter((o) => o.status === 'sent').sort((a, b) => (a.deliver || '9').localeCompare(b.deliver || '9'));
+  body.append(h('button', { class: 'btn', type: 'button', text: '+ ' + t('k_adhoc'), onclick: async () => {
+    const r = await cloud.F.addDoc(kCol('orders'), { supplierId: '', lines: [], status: 'sent', createdAt: Date.now(), sentAt: Date.now(), by: myName(), adhoc: true }).catch(kErr);
+    if (r) { K.open = r.id; kRender(); }
+  } }));
+  if (!pending.length) body.append(h('p', { class: 'muted', text: t('k_noPending') }));
+  const ul = h('ul', { class: 'klist' });
+  pending.forEach((o) => {
+    const sp = kSup(o.supplierId), isOpen = K.open === o.id;
+    const li = h('li', { class: 'krow' }, h('div', { class: 'kmain', onclick: () => { K.open = isOpen ? null : o.id; kRender(); } },
+      h('div', null, h('b', { text: sp ? sp.name : (o.adhoc ? t('k_adhoc') : t('k_noSupplier')) }), h('small', { class: 'from', text: ' · ' + n((o.lines || []).length) + ' ' + t('k_lines') + (o.deliver ? ' · ' + fmtTs(new Date(o.deliver + 'T09:00').getTime(), false) : '') })),
+      h('span', { class: 'kqty', text: '📥' })));
+    if (isOpen) li.append(kReceiveForm(o));
+    ul.append(li);
+  });
+  body.append(ul);
+}
+function kReceiveForm(o) {
+  const box = h('div', { class: 'tedit' });
+  const rows = (o.lines || []).map((l) => {
+    const x = kItem(l.itemId) || {};
+    const exp = new Date(); exp.setDate(exp.getDate() + (+x.shelf || 3));
+    return { l, rec: l.qty, exp: dstr(exp), ok: true };
+  });
+  const draw = () => {
+    box.replaceChildren();
+    rows.forEach((r) => {
+      const ok = h('input', { type: 'checkbox', onchange: (e) => { r.ok = e.target.checked; } }); ok.checked = r.ok;
+      box.append(h('div', { class: 'krec' },
+        h('div', { class: 'shareline' }, h('label', { class: 'check' }, ok, h('b', { text: r.l.name })), h('small', { class: 'from', text: t('k_ordered') + ' ' + n(+r.l.qty) + ' ' + kl('units', r.l.unit) })),
+        h('div', { class: 'row' },
+          h('label', null, t('k_recQty'), h('input', { class: 'field', type: 'number', inputmode: 'decimal', step: 'any', value: r.rec, onchange: (e) => { r.rec = +e.target.value || 0; } })),
+          h('label', null, t('k_expDate'), h('input', { class: 'field', type: 'date', value: r.exp, onchange: (e) => { r.exp = e.target.value; } })))));
+    });
+    const avail = K.items.filter((x) => !rows.some((r) => r.l.itemId === x.id));
+    box.append(selectEl([['', '+ ' + t('k_addLine')], ...avail.map((x) => [x.id, x.name])], '', (v) => {
+      const x = kItem(v); if (!x) return;
+      const exp = new Date(); exp.setDate(exp.getDate() + (+x.shelf || 3));
+      rows.push({ l: { itemId: x.id, name: x.name, unit: x.unit, qty: 0, price: x.price || 0 }, rec: 1, exp: dstr(exp), ok: true }); draw();
+    }));
+    const key = 'k:' + o.id; galCtx[key] = { mode: 'k', x: o }; watchFiles(key);
+    box.append(h('div', { class: 'subhead', text: '🧾 ' + t('k_invoice') }), gallery(key));
+    box.append(h('div', { class: 'shareline' }, h('button', { class: 'btn solid', type: 'button', text: '✓ ' + t('k_confirmRec'), onclick: () => kConfirm(o, rows) })));
+  };
+  draw();
+  return box;
+}
+async function kConfirm(o, rows) {
+  const { F, db } = cloud;
+  const b = F.writeBatch(db), now = Date.now();
+  let short = [];
+  rows.forEach((r) => {
+    const got = r.ok ? +r.rec || 0 : 0;
+    if (got < (+r.l.qty || 0)) short.push(r.l.name + ': ' + n(got) + '/' + n(+r.l.qty));
+    if (got > 0) {
+      b.set(F.doc(kCol('batches')), { itemId: r.l.itemId, name: r.l.name, unit: r.l.unit, qty: got, exp: r.exp || '', recAt: now, orderId: o.id, storage: (kItem(r.l.itemId) || {}).storage || '', status: 'in', by: myName() });
+      if (kItem(r.l.itemId)) b.update(kRef('items', r.l.itemId), { stock: F.increment(got) });
+    }
+  });
+  const lines = rows.map((r) => ({ ...r.l, rec: r.ok ? +r.rec || 0 : 0, ok: r.ok, exp: r.exp }));
+  b.update(kRef('orders', o.id), { lines, status: short.length ? 'partial' : 'received', recAt: now, recBy: myName() });
+  try { await b.commit(); toast(short.length ? t('k_short', short.join('، ')) : t('k_recDone')); K.open = null; kRender(); } catch (e) { kErr(e); }
+}
+
+/* ---------- ⏳ الصلاحية ---------- */
+function kExpiry(body) {
+  const list = K.batches.filter((b) => b.exp).sort((a, b) => a.exp.localeCompare(b.exp));
+  const exp = list.filter((b) => expDays(b) < 0).length, soon = list.filter((b) => expDays(b) >= 0 && expDays(b) <= 1).length;
+  const tiles = h('div', { class: 'tiles' });
+  tiles.append(h('div', { class: 'tile' + (exp ? ' bad' : '') }, h('b', { text: n(exp) }), h('span', { text: t('k_tExpired') })),
+    h('div', { class: 'tile' + (soon ? ' warn' : '') }, h('b', { text: n(soon) }), h('span', { text: t('k_tSoon') })),
+    h('div', { class: 'tile' }, h('b', { text: n(list.length) }), h('span', { text: t('k_tBatches') })));
+  body.append(tiles);
+  if (!list.length) { body.append(h('p', { class: 'muted', text: t('k_noBatches') })); return; }
+  const firstOf = {};
+  list.forEach((b) => { if (!(b.itemId in firstOf)) firstOf[b.itemId] = b.id; });
+  const ul = h('ul', { class: 'klist' });
+  list.forEach((b) => {
+    const isOpen = K.open === b.id;
+    const li = h('li', { class: 'krow ' + expClass(b) }, h('div', { class: 'kmain', onclick: () => { K.open = isOpen ? null : b.id; kRender(); } },
+      h('div', null, h('b', { text: b.name }), h('small', { class: 'from', text: ' · ' + n(+b.qty) + ' ' + kl('units', b.unit) + (b.storage ? ' · ' + kl('stor', b.storage).split(' ')[0] : '') + (firstOf[b.itemId] === b.id && list.filter((y) => y.itemId === b.itemId).length > 1 ? ' · ' + t('k_fifo') : '') })),
+      h('span', { class: 'kqty ' + expClass(b), text: expText(b) })));
+    if (isOpen) li.append(kBatchActions(b));
+    ul.append(li);
+  });
+  body.append(ul);
+}
+function kBatchActions(b) {
+  const { F, db } = cloud;
+  const qty = h('input', { class: 'field', type: 'number', inputmode: 'decimal', step: 'any', value: b.qty });
+  const reason = selectEl(KWASTE.map((r) => [r, kl('wr', r)]), expDays(b) < 0 ? 'expired' : 'damaged', () => {});
+  return h('div', { class: 'tedit' },
+    h('p', { class: 'muted', text: t('k_expDate') + ': ' + fmtTs(new Date(b.exp + 'T12:00').getTime(), false) + ' · ' + t('k_recOn', fmtTs(b.recAt, false)) }),
+    h('div', { class: 'row' }, h('label', null, t('k_qty'), qty), h('label', null, t('k_reason'), reason)),
+    h('div', { class: 'shareline' },
+      h('button', { class: 'btn solid', type: 'button', text: '✓ ' + t('k_used'), onclick: async () => {
+        const q = Math.min(+qty.value || 0, +b.qty), wb = F.writeBatch(db);
+        if (q >= +b.qty) wb.update(kRef('batches', b.id), { status: 'used', usedAt: Date.now() }); else wb.update(kRef('batches', b.id), { qty: Math.round((b.qty - q) * 100) / 100 });
+        if (kItem(b.itemId)) wb.update(kRef('items', b.itemId), { stock: F.increment(-q) });
+        await wb.commit().catch(kErr); K.open = null;
+      } }),
+      h('button', { class: 'btn danger', type: 'button', text: '🗑 ' + t('k_toWaste'), onclick: async () => {
+        const q = Math.min(+qty.value || 0, +b.qty), wb = F.writeBatch(db), it = kItem(b.itemId);
+        wb.set(F.doc(kCol('waste')), { itemId: b.itemId, name: b.name, unit: b.unit, qty: q, reason: reason.value, at: Date.now(), by: myName(), cost: it && it.price ? q * it.price : 0 });
+        if (q >= +b.qty) wb.update(kRef('batches', b.id), { status: 'waste', wasteAt: Date.now() }); else wb.update(kRef('batches', b.id), { qty: Math.round((b.qty - q) * 100) / 100 });
+        if (it) wb.update(kRef('items', b.itemId), { stock: F.increment(-q) });
+        await wb.commit().catch(kErr); K.open = null; toast(t('k_wasteSaved'));
+      } })));
+}
+
+/* ---------- 🗑 الهالك ---------- */
+function kWaste(body) {
+  const { F, db } = cloud;
+  const itemSel = selectEl([['', t('k_pickItem')], ...K.items.map((x) => [x.id, x.name])], '', () => {});
+  const qty = h('input', { class: 'field', type: 'number', inputmode: 'decimal', step: 'any', placeholder: t('k_qty') });
+  const reason = selectEl(KWASTE.map((r) => [r, kl('wr', r)]), 'damaged', () => {});
+  body.append(h('div', { class: 'tedit' }, h('div', { class: 'subhead', text: '+ ' + t('k_logWaste') }), itemSel, h('div', { class: 'row' }, qty, reason),
+    h('button', { class: 'btn solid', type: 'button', text: t('add'), onclick: async () => {
+      const it = kItem(itemSel.value), q = +qty.value || 0; if (!it || !q) return;
+      const wb = F.writeBatch(db);
+      wb.set(F.doc(kCol('waste')), { itemId: it.id, name: it.name, unit: it.unit, qty: q, reason: reason.value, at: Date.now(), by: myName(), cost: it.price ? q * it.price : 0 });
+      wb.update(kRef('items', it.id), { stock: F.increment(-q) });
+      await wb.commit().catch(kErr); toast(t('k_wasteSaved'));
+    } })));
+  const wk = Date.now() - 7 * DAY, list = K.waste.slice().sort((a, b) => b.at - a.at);
+  const cost7 = list.filter((w) => w.at >= wk).reduce((a, w) => a + (w.cost || 0), 0);
+  const tiles = h('div', { class: 'tiles' });
+  tiles.append(h('div', { class: 'tile' }, h('b', { text: n(list.filter((w) => w.at >= wk).length) }), h('span', { text: t('k_wasteWeek') })),
+    h('div', { class: 'tile' + (cost7 ? ' bad' : '') }, h('b', { text: money(cost7) || '—' }), h('span', { text: t('k_wasteCost') })));
+  body.append(tiles);
+  const ul = h('ul', { class: 'klist' });
+  list.slice(0, 60).forEach((w) => ul.append(h('li', { class: 'krow' }, h('div', { class: 'kmain' },
+    h('div', null, h('b', { text: w.name }), h('small', { class: 'from', text: ' · ' + kl('wr', w.reason) + ' · ' + (w.by || '') + ' · ' + fmtTs(w.at) })),
+    h('span', { class: 'kqty', text: n(+w.qty) + ' ' + kl('units', w.unit) + (w.cost ? ' · ' + money(w.cost) : '') })))));
+  if (!list.length) ul.append(h('li', { class: 'muted', text: t('k_noWaste') }));
+  body.append(ul);
+}
+
+/* ---------- 🚚 الموردين ---------- */
+function kSuppliers(body) {
+  body.append(h('div', { class: 'row' },
+    h('label', null, t('k_business'), h('input', { class: 'field', value: state.profile.business || '', onchange: (e) => { state.profile.business = e.target.value.trim(); save(); } })),
+    h('label', null, t('k_currency'), h('input', { class: 'field', value: state.profile.currency || '€', onchange: (e) => { state.profile.currency = e.target.value.trim() || '€'; save(); kRender(); } }))));
+  body.append(h('button', { class: 'btn solid', type: 'button', text: '+ ' + t('k_supplier'), onclick: async () => {
+    const r = await cloud.F.addDoc(kCol('suppliers'), { name: '', phone: '', days: '', lang }).catch(kErr); if (r) { K.open = r.id; kRender(); }
+  } }));
+  const ul = h('ul', { class: 'klist' });
+  K.suppliers.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '')).forEach((sp) => {
+    const isOpen = K.open === sp.id, upd = (f) => cloud.F.updateDoc(kRef('suppliers', sp.id), f).catch(kErr);
+    const cnt = K.items.filter((x) => x.supplierId === sp.id).length;
+    const li = h('li', { class: 'krow' }, h('div', { class: 'kmain', onclick: () => { K.open = isOpen ? null : sp.id; kRender(); } },
+      h('div', null, h('b', { text: sp.name || '—' }), h('small', { class: 'from', text: ' · ' + n(cnt) + ' ' + t('k_itemsN') + (sp.days ? ' · ' + sp.days : '') })),
+      sp.phone ? h('button', { class: 'iconbtn', type: 'button', text: '💬', onclick: (e) => { e.stopPropagation(); openExternal('https://wa.me/' + sp.phone.replace(/\D/g, '').replace(/^00/, '')); } }) : null));
+    if (isOpen) li.append(h('div', { class: 'tedit' },
+      h('input', { class: 'field', value: sp.name || '', placeholder: t('name'), onchange: (e) => upd({ name: e.target.value.trim() }) }),
+      h('div', { class: 'row' },
+        h('input', { class: 'field', value: sp.phone || '', placeholder: t('phone'), dir: 'ltr', inputmode: 'tel', onchange: (e) => upd({ phone: e.target.value.trim() }) }),
+        h('input', { class: 'field', value: sp.days || '', placeholder: t('k_days'), onchange: (e) => upd({ days: e.target.value.trim() }) })),
+      selectEl(['ar', 'en', 'me'].map((l) => [l, '🌐 ' + window.L[l].langName]), sp.lang || lang, (v) => upd({ lang: v })),
+      h('button', { class: 'btn danger', type: 'button', text: t('remove'), onclick: () => { if (confirmTwice(li)) cloud.F.deleteDoc(kRef('suppliers', sp.id)).catch(kErr); } })));
+    ul.append(li);
+  });
+  if (!K.suppliers.length) ul.append(h('li', { class: 'muted', text: t('k_noSuppliers') }));
+  body.append(ul);
+}
+
+$('kitchenBtn').addEventListener('click', () => (K.on ? kClose() : kOpen()));
 
 applyLang();
 if (CFG) startCloud();

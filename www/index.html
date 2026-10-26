@@ -262,6 +262,37 @@ details.help summary{cursor:pointer;color:var(--muted);font-size:.8rem}
 details.help p{margin:6px 0 0}
 .note{min-height:76px}
 @media (max-width:420px){.prop{grid-template-columns:88px minmax(0,1fr)}.plabel{font-size:.78rem}}
+.orig{margin:0;font-size:.78rem;color:var(--muted);font-style:italic}
+.kview{display:none;max-width:900px;margin:0 auto;padding:16px 16px 40px}
+body.kmode .kview{display:block}
+body.kmode .app{display:none}
+.khead{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.khead h2{margin:0;font-size:1.3rem;color:var(--ink)}
+.ktabs{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px}
+.ktabs .chip{white-space:nowrap}
+.kbody{display:grid;gap:10px}
+.klist{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.krow{background:var(--sheet);border-radius:12px;padding:8px 12px;display:grid;gap:6px;grid-template-columns:1fr auto;align-items:center}
+.krow>.tedit{grid-column:1/-1}
+.krow.low{border-inline-start:4px solid var(--danger)}
+.krow.bad{border-inline-start:4px solid var(--danger)}.krow.warn{border-inline-start:4px solid #E58A00}.krow.soon{border-inline-start:4px solid #E5C100}
+.kmain{display:flex;justify-content:space-between;align-items:center;gap:8px;cursor:pointer;min-width:0}
+.kmain>div{min-width:0}
+.kqty{font-size:.85rem;white-space:nowrap;color:var(--ink);font-weight:600}
+.kqty.bad{color:var(--danger)}.kqty.warn{color:#C26A00}
+.kstep{display:flex;gap:4px}.kstep .btn{padding:2px 12px;font-size:1rem}
+.kline{display:grid;grid-template-columns:1fr 90px 50px 30px;gap:6px;align-items:center}
+.kline .field{padding:5px 8px}
+.krec{background:var(--paper);border-radius:10px;padding:8px;display:grid;gap:6px}
+.staff #depts,.staff #people,.staff #q,.staff #soon,.staff #now,.staff #plist,.staff #addBtn,.staff #dashBtn,.staff #orgBtn,.staff #aiBtn,.staff .detail{display:none!important}
+.staff .app{grid-template-columns:1fr}
+.btn.big{width:100%;padding:12px;font-size:1.05rem}
+.btn.mic{width:100%;padding:12px;font-size:1rem;border-style:dashed}
+.btn.mic.rec{background:var(--danger);border-color:var(--danger);color:#fff;border-style:solid;animation:pulse 1.2s infinite}
+@keyframes pulse{50%{opacity:.75}}
+.brief p{margin:4px 0 0;white-space:pre-wrap;font-size:.92rem}
+.member.draft{border:1.5px solid var(--rule)}
+#reports:not([hidden]){display:grid;gap:8px}
 .toast{position:fixed;bottom:calc(18px + env(safe-area-inset-bottom,0px));inset-inline:0;margin:auto;width:max-content;max-width:90vw;background:var(--text);color:var(--sheet);padding:8px 16px;border-radius:999px;font-size:.88rem;z-index:30}
 </style>
 </head>
@@ -289,6 +320,9 @@ details.help p{margin:6px 0 0}
       <div style="display:flex;align-items:center;gap:6px">
         <span class="sync" id="sync"><i></i><span>بيحمّل…</span></span>
         <button class="iconbtn langbtn" id="langBtn" type="button">ع</button>
+        <button class="iconbtn" id="kitchenBtn" type="button" hidden aria-label="Kitchen">🍽</button>
+        <button class="iconbtn" id="aiBtn" type="button" aria-label="AI">🎙</button>
+        <button class="iconbtn" id="inboxBtn" type="button" hidden aria-label="Inbox">📥</button>
         <button class="iconbtn" id="orgBtn" type="button" hidden aria-label="Company">🏢</button>
         <button class="iconbtn" id="dashBtn" type="button" aria-label="Dashboard">📊</button>
         <button class="iconbtn" id="menuBtn" aria-label="الإعدادات" title="الإعدادات">⚙︎</button>
@@ -300,11 +334,13 @@ details.help p{margin:6px 0 0}
       <input class="field" id="addName" placeholder="اسم المشروع الجديد" aria-label="اسم المشروع الجديد">
       <button class="btn solid" type="submit" id="addSubmit">إضافة</button>
     </form>
+    <section class="soon" id="reports" hidden></section>
     <div class="people" id="depts"></div>
     <input class="field search" id="q" type="search" placeholder="دوّر باسم شخص أو مهمة أو رقم معاملة…" aria-label="بحث">
     <div class="people" id="people"></div>
     <div id="results"></div>
     <div id="home">
+      <section class="soon brief" id="brief" hidden></section>
       <section class="soon" id="mine" hidden></section>
       <section class="soon" id="soon" hidden></section>
       <section class="now" id="now" hidden></section>
@@ -314,6 +350,7 @@ details.help p{margin:6px 0 0}
   </div>
   <main class="detail" id="detail" aria-live="polite"></main>
 </div>
+<main id="kitchen" class="kview" aria-live="polite"></main>
 <div id="sheetRoot"></div>
 <input type="file" id="importFile" accept="application/json,.json" class="hidden">
 
