@@ -13,6 +13,10 @@ let writing = false, pending = false, timer = null, dirty = false, lastWritten =
 let toMe = [];              // مهام متبعتالي من ناس تانية
 let ownerSharedReady = false;
 let filesCache = {}, fileSub = { key: '', unsub: null };
+let deptFilter = ''; try { deptFilter = localStorage.getItem('mashari3-dept') || ''; } catch (e) {}
+const projOK = (p) => !deptFilter || p.dept === deptFilter;
+const dept = (id) => (state.depts || []).find((d) => d.id === id);
+const myName = () => (state.profile.name || '').trim() || (cloud && cloud.user ? cloud.user.email : '') || t('me');
 const NKEY = 'mashari3-notified';
 let notified = new Set(); try { notified = new Set(JSON.parse(localStorage.getItem(NKEY) || '[]')); } catch (e) {}
 function markNotified(k) { notified.add(k); try { localStorage.setItem(NKEY, JSON.stringify([...notified].slice(-300))); } catch (e) {} }
@@ -21,9 +25,18 @@ const $ = (id) => document.getElementById(id);
 const plist = $('plist'), detail = $('detail'), nowEl = $('now');
 
 /* ---------------- language ---------------- */
-let lang = 'ar';
-try { lang = localStorage.getItem(LANGKEY) || 'ar'; } catch (e) {}
-if (!window.L[lang]) lang = 'ar';
+function detectLang() {
+  const list = (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || 'ar']).map((x) => String(x).toLowerCase());
+  for (const l of list) {
+    if (l.startsWith('ar')) return 'ar';
+    if (/^(sr|me|cnr|hr|bs|sh)/.test(l)) return 'me';
+    if (l.startsWith('en')) return 'en';
+  }
+  return 'en';
+}
+let lang = null;
+try { lang = localStorage.getItem(LANGKEY); } catch (e) {}
+if (!lang || !window.L[lang]) lang = detectLang();
 function t(k, ...a) { const d = window.L[lang], v = d[k] !== undefined ? d[k] : window.L.ar[k]; return typeof v === 'function' ? v(...a) : v; }
 function loc() {
   const want = t('locale');
@@ -42,6 +55,13 @@ function applyLang() {
   $('addSubmit').textContent = t('add'); $('q').placeholder = t('searchPh');
   $('menuBtn').setAttribute('aria-label', t('settings')); $('menuBtn').title = t('settings');
   setSync(syncKind); if (bannerKey) setBanner(bannerKey);
+  const ll = $('loginLangs');
+  if (ll) {
+    ll.replaceChildren();
+    ['ar', 'en', 'me'].forEach((l) => ll.append(h('button', { class: 'chip', type: 'button', 'aria-pressed': lang === l ? 'true' : 'false', text: window.L[l].langName, onclick: () => setLang(l) })));
+  }
+  const lb = $('langBtn');
+  if (lb) { lb.textContent = { ar: 'ع', en: 'EN', me: 'ME' }[lang]; lb.title = t('language'); lb.setAttribute('aria-label', t('language')); }
 }
 function setLang(l) { lang = l; try { localStorage.setItem(LANGKEY, l); } catch (e) {} applyLang(); render(); scheduleNotifs(); }
 
@@ -94,6 +114,7 @@ function nextStep(p) { return p.tasks.find((x) => x.s === 1) || p.tasks.find((x)
 const find = (id) => state.projects.find((p) => p.id === id);
 const touch = (p) => { p.updatedAt = Date.now(); };
 const activeProjects = () => state.projects.filter((p) => !p.archived);
+const allTasksF = () => allTasks().filter(({ p }) => projOK(p));
 function allTasks() { const r = []; state.projects.forEach((p) => p.tasks.forEach((x) => r.push({ p, t: x }))); return r; }
 function member(name) { const k = norm(name); return k ? (state.team || []).find((m) => norm(m.name) === k) : null; }
 function people() {
@@ -120,6 +141,8 @@ function openExternal(url) {
 function normalizeState() {
   if (!Array.isArray(state.team)) state.team = [];
   if (!state.profile || typeof state.profile !== 'object') state.profile = {};
+  if (!Array.isArray(state.depts) || !state.depts.length) state.depts = t('deptDefaults').map(([icon, name], i) => ({ id: 'd' + (i + 1), icon, name }));
+  if (!Array.isArray(state.templates)) state.templates = [];
 }
 function saveLocal() { try { localStorage.setItem(LKEY, JSON.stringify(state)); } catch (e) {} }
 let syncKind = 'local', bannerKey = '';
@@ -144,8 +167,17 @@ function processRepeats() {
     });
   });
 }
+function stampTimes() {
+  const now = Date.now();
+  allTasks().forEach(({ t: x }) => {
+    if (x.s >= 1 && !x.startedAt) x.startedAt = now;
+    if (x.s === 2 && !x.doneAt) x.doneAt = now;
+    if (x.s !== 2 && x.doneAt) { delete x.doneAt; if (x.review === 'ok') delete x.review; }
+    if (x.s === 0 && x.startedAt) delete x.startedAt;
+  });
+}
 function save() {
-  processRepeats();
+  processRepeats(); stampTimes();
   dirty = true; saveLocal(); scheduleNotifs();
   if (!cloud) { dirty = false; return; }
   setSync('saving');
@@ -180,10 +212,10 @@ function shareFields(p, x) {
     assigneeEmail: x.shareEmail, assigneeName: x.who || '',
     projectName: p.name, text: x.text, date: x.date || '', time: x.time || '',
     kind: x.kind || '', stage: x.stage || 0, office: x.office || '', ref: x.ref || '', s: x.s,
-    taskId: x.id, brief: x.brief || '', urgent: !!x.urgent,
+    taskId: x.id, brief: x.brief || '', urgent: !!x.urgent, checks: x.checks || [],
   };
 }
-function shareHash(p, x) { return JSON.stringify([p.name, x.text, x.date, x.time, x.kind, x.stage, x.office, x.ref, x.s, x.shareEmail, x.who, state.profile.name, x.brief, x.urgent]); }
+function shareHash(p, x) { return JSON.stringify([p.name, x.text, x.date, x.time, x.kind, x.stage, x.office, x.ref, x.s, x.shareEmail, x.who, state.profile.name, x.brief, x.urgent, x.checks]); }
 let pendingUnshare = [];
 function unshare(x) { if (x.shareId) pendingUnshare.push(x.shareId); delete x.shareId; delete x.shareEmail; delete x._sh; delete x.seenAt; delete x.reply; }
 function pushShared() {
@@ -199,10 +231,13 @@ function pushShared() {
     if (!x.shareId) x.shareId = cloud.user.uid.slice(0, 8) + '_' + uid() + uid();
     const hsh = shareHash(p, x);
     if (hsh === x._sh) return;
-    if (!x._sh) linkFiles(x);
+    const first = !x._sh;
+    if (first) linkFiles(x);
     const now = Date.now();
     x._sh = hsh; x.shAt = now;
-    F.setDoc(F.doc(db, 'shared', x.shareId), { ...shareFields(p, x), updatedBy: 'owner', updatedAt: now }, { merge: true }).catch((e) => console.warn('share', e));
+    const payload = { ...shareFields(p, x), updatedBy: 'owner', updatedAt: now };
+    if (first) { if (!(x.log || []).some((e) => e.a === 'assigned')) (x.log = x.log || []).push({ a: 'assigned', by: myName(), at: now }); payload.log = F.arrayUnion(...x.log); }
+    F.setDoc(F.doc(db, 'shared', x.shareId), payload, { merge: true }).catch((e) => console.warn('share', e));
   });
 }
 function mergeFromShared(sid, d) {
@@ -210,14 +245,21 @@ function mergeFromShared(sid, d) {
   const { p, t: x } = hit;
   let changed = false, note = '';
   if (d.seenAt && d.seenAt !== x.seenAt) { x.seenAt = d.seenAt; changed = true; }
+  if (Array.isArray(d.log) && d.log.length > (x.log || []).length) {
+    const fresh = d.log.slice((x.log || []).length);
+    x.log = d.log; changed = true;
+    const last = fresh.filter((e) => e.by !== myName() && e.a === 'msg').pop();
+    if (last) note = '💬 ' + last.m;
+  }
   if (d.updatedBy === 'assignee' && (d.updatedAt || 0) > (x.shAt || 0)) {
     if (d.s !== x.s || (x.kind === 'm' && d.stage !== x.stage)) {
       if (x.kind === 'm') setStage(x, d.stage || 0); else x.s = d.s;
-      if (x.s === 2) x.follow = 0;
+      if (x.s === 2) { x.follow = 0; x.review = 'pending'; }
       note = x.kind === 'm' ? STG()[x.stage || 0] : (x.s === 2 ? t('sDone') : x.s === 1 ? t('sDoing') : t('sTodo'));
     }
+    if (Array.isArray(d.checks) && JSON.stringify(d.checks) !== JSON.stringify(x.checks || [])) { x.checks = d.checks; note = note || '☑'; }
     if ((d.reply || '') !== (x.reply || '')) { x.reply = d.reply || ''; note = note || (t('replyLabel') + x.reply); }
-    if ((d.photoAt || 0) > (x.photoAt || 0)) { x.photoAt = d.photoAt; note = note || '📷'; if (filesCache[x.id]) delete filesCache[x.id]; }
+    if ((d.photoAt || 0) > (x.photoAt || 0)) { x.photoAt = d.photoAt; note = note || '📷'; if (filesCache['o:' + x.id]) delete filesCache['o:' + x.id]; }
     x.shAt = d.updatedAt; changed = true;
   }
   if (!changed) return;
@@ -225,17 +267,56 @@ function mergeFromShared(sid, d) {
   if (note) {
     const msg = t('teamUpdate', x.who || d.assigneeName || '', x.text + ' (' + note + ')');
     toast(msg);
-    const k = 'u:' + sid + ':' + d.updatedAt;
+    const k = 'u:' + sid + ':' + (d.updatedAt || 0) + ':' + (d.log || []).length;
     if (!notified.has(k)) { markNotified(k); notifyNow(t('appName'), msg, { pid: p.id, tid: x.id }); }
   }
   save(); const a = document.activeElement;
   if (a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT')) renderList(); else render();
 }
-function updateAssigned(id, fields) {
+function updateAssigned(id, fields, entry) {
   if (!cloud) return;
   const { F, db } = cloud;
-  F.updateDoc(F.doc(db, 'shared', id), { ...fields, updatedBy: 'assignee', updatedAt: Date.now() }).catch((e) => { console.warn(e); toast(t('syncErr')); });
+  const payload = { ...fields, updatedBy: 'assignee', updatedAt: Date.now() };
+  if (entry) payload.log = F.arrayUnion({ ...entry, by: myName(), at: Date.now() });
+  F.updateDoc(F.doc(db, 'shared', id), payload).catch((e) => { console.warn(e); toast(t('syncErr')); });
 }
+function logAdd(x, entry) {
+  const e = { ...entry, by: myName(), at: Date.now() };
+  (x.log = x.log || []).push(e);
+  if (x.shareId && cloud && x._sh) cloud.F.updateDoc(cloud.F.doc(cloud.db, 'shared', x.shareId), { log: cloud.F.arrayUnion(e) }).catch((err) => console.warn(err));
+}
+function logText(e) {
+  if (e.a === 'msg') return e.m;
+  return (t('logA')[e.a] || e.a) + (e.m ? ' ' + e.m : '');
+}
+function threadView(log, onSend) {
+  const box = h('div', { class: 'thread' });
+  const list = h('ul', { class: 'tlog' });
+  (log || []).slice(-40).forEach((e) => list.append(h('li', { class: e.a === 'msg' ? 'msg' : 'evt' },
+    h('b', { text: e.by || '' }), ' ', h('span', { text: logText(e) }), h('small', { text: ' · ' + fmtTs(e.at) }))));
+  if (!(log || []).length) list.append(h('li', { class: 'evt', text: t('noLog') }));
+  const inp = h('input', { class: 'field', placeholder: t('msgPh') });
+  const send = () => { const v = inp.value.trim(); if (!v) return; inp.value = ''; onSend(v); };
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); send(); } });
+  box.append(list, h('div', { class: 'addt' }, inp, h('button', { class: 'btn solid', type: 'button', text: t('send'), onclick: send })));
+  return box;
+}
+function checklistView(checks, editable, onChange) {
+  const box = h('div', { class: 'checks' });
+  (checks || []).forEach((c) => {
+    const cb = h('input', { type: 'checkbox', onchange: (e) => { c.d = e.target.checked; onChange(checks); } }); cb.checked = !!c.d;
+    box.append(h('div', { class: 'citem' + (c.d ? ' done' : '') }, h('label', { class: 'check' }, cb, h('span', { text: c.t })),
+      editable ? h('button', { class: 'del', type: 'button', text: '×', 'aria-label': t('deleteStep'), onclick: () => onChange(checks.filter((y) => y !== c)) }) : null));
+  });
+  if (editable) {
+    const inp = h('input', { class: 'field', placeholder: t('checkPh') });
+    const add = () => { const v = inp.value.trim(); if (!v) return; onChange([...(checks || []), { id: uid(), t: v, d: false }], true); };
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+    box.append(h('div', { class: 'addt' }, inp, h('button', { class: 'btn', type: 'button', text: t('add'), onclick: add })));
+  }
+  return box;
+}
+const checkCount = (c) => (c && c.length ? c.filter((y) => y.d).length + '/' + c.length : '');
 function startShared(F, db, user) {
   const col = F.collection(db, 'shared');
   const subs = [];
@@ -329,7 +410,7 @@ async function uploadFile(key, kind, file) {
   try {
     await F.addDoc(F.collection(db, 'files'), d);
     toast(t('uploaded'));
-    if (ctx.mode === 'a') updateAssigned(ctx.x.id, { photoAt: Date.now() });
+    if (ctx.mode === 'a') updateAssigned(ctx.x.id, { photoAt: Date.now() }, { a: 'photo', m: t(kind) });
     else { ctx.x.photos = (ctx.x.photos || 0) + 1; touch(ctx.p); save(); renderList(); }
   } catch (e) { console.warn(e); toast(t('uploadErr')); }
 }
@@ -474,6 +555,17 @@ window.addEventListener('popstate', (e) => {
 /* ---------------- rendering: list ---------------- */
 function render() { renderList(); renderDetail(); }
 
+function renderDepts() {
+  const box = $('depts'); box.replaceChildren();
+  box.hidden = !state.projects.length;
+  if (box.hidden) return;
+  const cnt = (id) => allTasks().filter(({ p, t: x }) => x.s !== 2 && !p.archived && (!id || p.dept === id)).length;
+  const chip = (id, label) => h('button', { class: 'chip', 'aria-pressed': deptFilter === id ? 'true' : 'false', onclick: () => {
+    deptFilter = id; try { localStorage.setItem('mashari3-dept', id); } catch (e) {} renderList();
+  } }, label, h('b', { text: n(cnt(id)) }));
+  box.append(chip('', t('allDepts')));
+  state.depts.forEach((d) => box.append(chip(d.id, d.icon + ' ' + d.name)));
+}
 function renderPeople() {
   const box = $('people'), dl = $('names');
   box.replaceChildren(); dl.replaceChildren();
@@ -530,6 +622,14 @@ function renderResults() {
     const byP = {};
     g.items.sort((a, b) => (a.t.s === 2) - (b.t.s === 2)).forEach((x) => { (byP[x.p.id] = byP[x.p.id] || { p: x.p, l: [] }).l.push(x.t); });
     Object.values(byP).forEach((o) => { card.append(h('h4', { text: o.p.name })); const ul = h('ul'); o.l.forEach((x) => ul.append(resultLine(o.p, x))); card.append(ul); });
+    if (open.length) {
+      const m = member(g.name);
+      card.append(h('div', { class: 'shareline', style: 'margin-top:10px' }, h('button', { class: 'btn wa', text: t('sendTasks'), onclick: () => {
+        const lines = [t('tasksFor', g.name)];
+        open.forEach(({ p, t: x }) => lines.push('• ' + (x.urgent ? '🔴 ' : '') + x.text + ' (' + p.name + ')' + (x.date ? ' · ' + fmtDue(x) : '')));
+        openExternal('https://wa.me/' + (m && m.phone ? m.phone.replace(/\D/g, '').replace(/^00/, '') : '') + '?text=' + encodeURIComponent(lines.join('\n')));
+      } })));
+    }
     res.append(card);
   });
   if (byText.length) {
@@ -543,40 +643,47 @@ function snooze(p, x, ms) { x.follow = Date.now() + ms; touch(p); save(); render
 
 function renderMine() {
   const el = $('mine'); el.replaceChildren();
-  const list = toMe.slice().sort((a, b) => (a.s === 2) - (b.s === 2) || (dueTs(a) || 9e15) - (dueTs(b) || 9e15));
+  const list = toMe.slice().sort((a, b) => (a.s === 2) - (b.s === 2) || (b.urgent ? 1 : 0) - (a.urgent ? 1 : 0) || (dueTs(a) || 9e15) - (dueTs(b) || 9e15));
   const open = list.filter((x) => x.s !== 2);
   el.hidden = !open.length && !list.some((x) => x.id === openAssigned);
   if (el.hidden) return;
   el.append(h('h3', { text: t('assignedToMe') + ' (' + n(open.length) + ')' }));
   const ul = h('ul', { class: 'assigned' });
+  const setS = (x, s, stage) => {
+    const prev = x.s; x.s = s; if (stage !== undefined) x.stage = stage;
+    const ev = s === 1 && prev !== 1 ? 'start' : s === 2 ? 'done' : s === 0 ? 'reopen' : null;
+    updateAssigned(x.id, stage !== undefined ? { s, stage } : { s }, ev ? { a: ev } : null);
+    if (s === 2) toast(t('doneSent'));
+    renderList();
+  };
   list.filter((x) => x.s !== 2 || x.id === openAssigned).forEach((x) => {
-    const isOpen = openAssigned === x.id, dk = dueKind(x);
+    const isOpen = openAssigned === x.id, dk = dueKind(x), cc = checkCount(x.checks);
     const st = h('button', { class: 'st', 'data-s': x.s || 0, 'aria-label': x.kind === 'm' ? t('aStage', STG()[x.stage || 0]) : (x.s === 0 ? t('aTodo') : x.s === 1 ? t('aDoing') : t('aDone')), onclick: () => {
-      if (x.kind === 'm') { const k = ((x.stage || 0) + 1) % 4; x.stage = k; x.s = k === 3 ? 2 : k === 0 ? 0 : 1; updateAssigned(x.id, { stage: x.stage, s: x.s }); }
-      else { x.s = ((x.s || 0) + 1) % 3; updateAssigned(x.id, { s: x.s }); }
-      renderList();
+      if (x.kind === 'm') { const k = ((x.stage || 0) + 1) % 4; setS(x, k === 3 ? 2 : k === 0 ? 0 : 1, k); }
+      else setS(x, ((x.s || 0) + 1) % 3);
     } });
     const li = h('li', { id: 'a-' + x.id },
       h('div', { class: 'arow' }, st,
         h('div', { class: 'tbody', onclick: () => { openAssigned = isOpen ? null : x.id; renderList(); } },
           h('div', { text: (x.urgent ? '🔴 ' : '') + x.text }),
-          h('div', { class: 'from', text: t('fromX', x.ownerName || x.ownerEmail) + ' · ' + x.projectName + (x.kind === 'm' ? ' · ' + STG()[x.stage || 0] : '') }),
+          h('div', { class: 'from', text: t('fromX', x.ownerName || x.ownerEmail) + ' · ' + x.projectName + (x.kind === 'm' ? ' · ' + STG()[x.stage || 0] : '') + (cc ? ' · ☑ ' + cc : '') }),
           x.date ? h('span', { class: 'when ' + dk, text: (dk === 'over' ? t('late') : '') + fmtDue(x) }) : null)));
     if (isOpen) {
-      const ta = h('textarea', { class: 'field', placeholder: t('replyPh') }); ta.value = x.reply || '';
       galCtx['a:' + x.id] = { mode: 'a', x }; watchFiles('a:' + x.id);
-      const box = h('div', { class: 'areply' },
-        x.brief ? h('p', { class: 'brief', text: x.brief }) : null,
-        h('div', { class: 'subhead', text: t('photos') }), gallery('a:' + x.id),
-        ta, h('div', { class: 'shareline' },
-        h('button', { class: 'btn solid', text: t('send'), onclick: () => { x.reply = ta.value.trim(); updateAssigned(x.id, { reply: x.reply, replyAt: Date.now() }); toast('✓'); } })));
+      const box = h('div', { class: 'areply' });
       if (x.kind === 'm') {
         const stg = h('div', { class: 'stages' });
-        STG().forEach((s, k) => stg.append(h('button', { class: 'chip', 'aria-pressed': (x.stage || 0) === k ? 'true' : 'false', text: s, onclick: () => {
-          x.stage = k; x.s = k === 3 ? 2 : k === 0 ? 0 : 1; updateAssigned(x.id, { stage: k, s: x.s }); renderList();
-        } })));
-        box.prepend(stg);
+        STG().forEach((s, k) => stg.append(h('button', { class: 'chip', 'aria-pressed': (x.stage || 0) === k ? 'true' : 'false', text: s, onclick: () => setS(x, k === 3 ? 2 : k === 0 ? 0 : 1, k) })));
+        box.append(stg);
+      } else {
+        const sb = h('div', { class: 'stages' });
+        [t('sTodo'), t('sDoing'), t('sDone')].forEach((s, k) => sb.append(h('button', { class: 'chip', 'aria-pressed': (x.s || 0) === k ? 'true' : 'false', text: s, onclick: () => setS(x, k) })));
+        box.append(sb);
       }
+      if (x.brief) box.append(h('p', { class: 'brief', text: x.brief }));
+      if (x.checks && x.checks.length) box.append(h('div', { class: 'subhead', text: t('checklist') + ' ' + cc }), checklistView(x.checks, false, (c) => { x.checks = c; updateAssigned(x.id, { checks: c }); renderList(); }));
+      box.append(h('div', { class: 'subhead', text: t('photos') }), gallery('a:' + x.id));
+      box.append(h('div', { class: 'subhead', text: t('thread') }), threadView(x.log, (m) => { (x.log = x.log || []).push({ a: 'msg', m, by: myName(), at: Date.now() }); updateAssigned(x.id, {}, { a: 'msg', m }); renderList(); }));
       li.append(box);
     }
     ul.append(li);
@@ -584,10 +691,23 @@ function renderMine() {
   el.append(ul);
 }
 
+function approve(p, x) { x.review = 'ok'; logAdd(x, { a: 'approved' }); touch(p); save(); render(); }
+function sendBack(p, x) {
+  const ta = h('textarea', { class: 'field', placeholder: t('returnPh'), rows: '3' });
+  const box = h('div', { class: 'box', role: 'dialog' }, h('h2', { text: t('returnTask') }), h('p', { class: 'muted', text: x.text }), ta,
+    h('div', { class: 'shareline' },
+      h('button', { class: 'btn solid', text: t('send'), onclick: () => {
+        if (x.kind === 'm') setStage(x, 1); else x.s = 1;
+        x.review = ''; logAdd(x, { a: 'returned', m: ta.value.trim() }); touch(p); save(); closeSheet(); render();
+      } }),
+      h('button', { class: 'btn ghost', text: t('close'), onclick: closeSheet })));
+  openSheet(box); ta.focus();
+}
 function renderSoon() {
   const el = $('soon'); el.replaceChildren();
   const now = Date.now(), lim = now + 7 * 86400000, items = [];
-  allTasks().forEach(({ p, t: x }) => {
+  allTasksF().forEach(({ p, t: x }) => {
+    if (x.s === 2 && x.review === 'pending') items.push({ p, x, at: -1, type: 'r' });
     if (x.s === 2) return;
     if (x.date && dueTs(x) <= lim) items.push({ p, x, at: dueTs(x), type: 'd' });
     if (x.follow && x.follow <= lim) items.push({ p, x, at: x.follow, type: 'f' });
@@ -598,11 +718,14 @@ function renderSoon() {
   el.append(h('h3', { text: t('attention') }));
   const ul = h('ul');
   items.slice(0, 12).forEach(({ p, x, at, type }) => {
-    const late = type !== 'u' && at <= now;
-    const label = type === 'u' ? t('urgent') : type === 'f' ? t('lblFollow', x.who || t('whoDefault')) : x.kind === 'm' ? t('lblPickup') : t('lblDue');
+    const late = type !== 'u' && type !== 'r' && at <= now;
+    const label = type === 'r' ? t('needsReview', x.who || '') : type === 'u' ? t('urgent') : type === 'f' ? t('lblFollow', x.who || t('whoDefault')) : x.kind === 'm' ? t('lblPickup') : t('lblDue');
     const li = h('li', null, h('button', { onclick: () => { openTask = x.id; select(p.id); } },
       h('span', null, h('small', { text: label + '  |  ' + p.name }), x.text),
-      h('span', { class: 'when' + (late ? ' over' : (type === 'd' && dueKind(x) === 'today') ? ' today' : ''), text: type === 'u' ? '' : (late ? t('late') : '') + (type === 'd' ? fmtDue(x) : fmtTs(at)) })));
+      h('span', { class: 'when' + (late ? ' over' : (type === 'd' && dueKind(x) === 'today') ? ' today' : ''), text: type === 'u' || type === 'r' ? '' : (late ? t('late') : '') + (type === 'd' ? fmtDue(x) : fmtTs(at)) })));
+    if (type === 'r') li.append(h('div', { class: 'acts' },
+      h('button', { class: 'btn solid', text: t('approve'), onclick: () => approve(p, x) }),
+      h('button', { class: 'btn', text: t('returnTask'), onclick: () => sendBack(p, x) })));
     if (type === 'f' && late) {
       li.append(h('div', { class: 'acts' },
         h('button', { class: 'btn', text: t('reviewed'), onclick: () => { x.follow = 0; x.lastReview = Date.now(); touch(p); save(); render(); toast(t('reviewedToast')); } }),
@@ -629,7 +752,7 @@ function projectCard(p) {
   const stale = d != null && d >= 7 && g.d < g.t && !p.archived;
   const urg = p.tasks.filter((x) => x.urgent && x.s !== 2).length;
   return h('li', null, h('button', { class: 'pcard', 'aria-current': selected === p.id ? 'true' : 'false', onclick: () => select(p.id) },
-    h('div', { class: 'name' }, h('span', { class: 'hl', text: p.name }), urg ? h('span', { class: 'urgc', text: ' 🔴 ' + n(urg) }) : null),
+    h('div', { class: 'name' }, dept(p.dept) ? dept(p.dept).icon + ' ' : '', h('span', { class: 'hl', text: p.name }), urg ? h('span', { class: 'urgc', text: ' 🔴 ' + n(urg) }) : null),
     p.note ? h('p', { class: 'line' }, h('b', { text: t('stoppedAt') }), p.note) : null,
     !p.note && nx ? h('p', { class: 'line' }, h('b', { text: t('nextShort') }), nx.text) : null,
     h('div', { class: 'bar' }, h('span', { style: 'width:' + g.pct + '%' })),
@@ -639,8 +762,8 @@ function projectCard(p) {
 }
 function renderList() {
   document.body.classList.toggle('show-detail', !!selected);
-  renderPeople(); renderResults(); renderMine(); renderSoon();
-  const doing = allTasks().filter(({ t: x }) => x.s === 1 && x.kind !== 'm');
+  renderDepts(); renderPeople(); renderResults(); renderMine(); renderSoon();
+  const doing = allTasksF().filter(({ t: x }) => x.s === 1 && x.kind !== 'm');
   nowEl.hidden = !doing.length; nowEl.replaceChildren();
   if (doing.length) {
     nowEl.append(h('h3', { text: t('nowDoing') }));
@@ -650,10 +773,11 @@ function renderList() {
   }
   plist.replaceChildren();
   if (!state.projects.length) {
+    if (toMe.length) return;
     plist.append(h('li', null, h('div', { class: 'empty' }, h('p', { text: t('emptyProjects') }), h('button', { class: 'btn solid', onclick: openAdd, text: t('addProjectBtn') }))));
     return;
   }
-  activeProjects().forEach((p) => plist.append(projectCard(p)));
+  activeProjects().filter(projOK).forEach((p) => plist.append(projectCard(p)));
   const arch = state.projects.filter((p) => p.archived);
   if (arch.length) {
     const ul = h('ul', { class: 'plist' }); arch.forEach((p) => ul.append(projectCard(p)));
@@ -663,9 +787,11 @@ function renderList() {
 
 /* ---------------- rendering: detail ---------------- */
 function cycle(p, x) {
+  const prev = x.s;
   if (x.kind === 'm') setStage(x, ((x.stage || 0) + 1) % 4);
   else x.s = (x.s + 1) % 3;
-  if (x.s === 2) x.follow = 0;
+  if (x.s !== prev) logAdd(x, { a: x.s === 1 ? 'start' : x.s === 2 ? 'done' : 'reopen' });
+  if (x.s === 2) { x.follow = 0; x.review = 'ok'; }
   touch(p); save(); render();
 }
 
@@ -705,6 +831,30 @@ function editPanel(p, x) {
   const ug = h('input', { type: 'checkbox', onchange: (e) => { x.urgent = e.target.checked; upd(); } });
   ug.checked = !!x.urgent;
   box.append(h('label', { class: 'check' }, ug, t('urgent')));
+
+  // مراجعة
+  if (x.review === 'pending' && x.s === 2) box.prepend(h('div', { class: 'next' }, h('span', { text: t('needsReview', x.who || '') }),
+    h('span', { class: 'shareline' }, h('button', { class: 'btn solid', type: 'button', text: t('approve'), onclick: () => approve(p, x) }),
+      h('button', { class: 'btn', type: 'button', text: t('returnTask'), onclick: () => sendBack(p, x) }))));
+
+  // قائمة فرعية وقوالب
+  box.append(h('div', { class: 'subhead', text: t('checklist') + (x.checks && x.checks.length ? ' ' + checkCount(x.checks) : '') }));
+  box.append(checklistView(x.checks || [], true, (c, adding) => {
+    x.checks = c; upd();
+    if (adding) { const f = detail.querySelector('#t-' + x.id + ' .checks input.field'); if (f) f.focus(); }
+  }));
+  const tplSel = h('select', { class: 'field', onchange: (e) => {
+    const tp = state.templates.find((y) => y.id === e.target.value); if (!tp) return;
+    x.checks = [...(x.checks || []), ...tp.checks.map((c) => ({ id: uid(), t: c, d: false }))];
+    if (!x.brief && tp.brief) x.brief = tp.brief;
+    upd();
+  } });
+  tplSel.append(h('option', { value: '', text: t('useTemplate') }));
+  state.templates.forEach((tp) => tplSel.append(h('option', { value: tp.id, text: tp.name })));
+  box.append(h('div', { class: 'row' }, tplSel, h('button', { class: 'btn', type: 'button', text: t('saveTemplate'), onclick: () => {
+    if (!(x.checks || []).length) { toast(t('templateEmpty')); return; }
+    state.templates.push({ id: uid(), name: x.text, checks: x.checks.map((c) => c.t), brief: x.brief || '' }); save(); toast(t('templateSaved')); render();
+  } })));
 
   // معاملة
   const chk = h('input', { type: 'checkbox', onchange: (e) => { if (e.target.checked) { x.kind = 'm'; setStage(x, x.s === 2 ? 3 : x.s === 1 ? 1 : 0); } else { x.kind = ''; } upd(); } });
@@ -748,12 +898,17 @@ function editPanel(p, x) {
   // صور وورق
   const key = 'o:' + x.id; galCtx[key] = { mode: 'o', p, x }; watchFiles(key);
   box.append(h('div', { class: 'subhead', text: t('photos') }), gallery(key));
+
+  // محادثة وسجل
+  box.append(h('div', { class: 'subhead', text: t('thread') }), threadView(x.log, (m) => { logAdd(x, { a: 'msg', m }); touch(p); save(); render();
+    const f = detail.querySelector('#t-' + x.id + ' .thread input.field'); if (f) f.focus(); }));
   return box;
 }
 
 function taskRow(p, x) {
   const isOpen = openTask === x.id, dk = dueKind(x);
   const meta = [];
+  if (x.review === 'pending' && x.s === 2) meta.push(h('span', { class: 'urg', text: '⏳ ' + t('kReview') }));
   if (x.urgent && x.s !== 2) meta.push(h('span', { class: 'urg', text: t('urgent') }));
   if (x.who) meta.push(h('span', { class: 'who', text: x.who }));
   if (x.shareEmail) meta.push(h('span', { class: 'shr', text: t('sharedWith', x.who || x.shareEmail) + (x.seenAt ? ' · ' + t('seen') : '') }));
@@ -763,6 +918,10 @@ function taskRow(p, x) {
   if (x.reply) meta.push(h('span', { class: 'rep', text: t('replyLabel') + x.reply }));
   if (x.repeat) meta.push(h('span', { text: '♻️ ' + t('repeatOpts')[['', 'd', 'w', 'm'].indexOf(x.repeat)] }));
   if (x.photos || x.photoAt) meta.push(h('span', { text: '📷' }));
+  if (x.checks && x.checks.length) meta.push(h('span', { text: '☑ ' + checkCount(x.checks) }));
+  if (x.s === 2 && x.doneAt) meta.push(h('span', { text: '✓ ' + fmtTs(x.doneAt) }));
+  const lastMsg = (x.log || []).filter((e) => e.a === 'msg').pop();
+  if (lastMsg && !openTask) meta.push(h('span', { class: 'rep', text: '💬 ' + lastMsg.by + ': ' + (lastMsg.m.length > 40 ? lastMsg.m.slice(0, 40) + '…' : lastMsg.m) }));
   if (x.brief) meta.push(h('span', { class: 'rep', text: '📝 ' + (x.brief.length > 40 ? x.brief.slice(0, 40) + '…' : x.brief) }));
   const li = h('li', { class: 'task' + (x.s === 2 ? ' done' : x.s === 1 ? ' doing' : ''), id: 't-' + x.id },
     h('button', { class: 'st', 'data-s': x.s, 'aria-label': x.kind === 'm' ? t('aStage', STG()[x.stage || 0]) : x.s === 0 ? t('aTodo') : x.s === 1 ? t('aDoing') : t('aDone'), onclick: () => cycle(p, x) }),
@@ -792,6 +951,10 @@ function renderDetail() {
     title.replaceChildren(inp); inp.focus(); inp.select();
   });
   detail.append(title);
+  const ds = h('select', { class: 'field deptsel', 'aria-label': t('depts'), onchange: (e) => { p.dept = e.target.value; touch(p); save(); render(); } });
+  ds.append(h('option', { value: '', text: t('noDept') }));
+  state.depts.forEach((d) => { const o = h('option', { value: d.id, text: d.icon + ' ' + d.name }); if (p.dept === d.id) o.selected = true; ds.append(o); });
+  detail.append(ds);
   detail.append(h('p', { class: 'pmeta', text: (g.t ? t('progress', n(g.d), n(g.t), n(g.pct)) : t('noSteps')) + (p.updatedAt ? '. ' + t('lastEdit', rel(p.updatedAt)) : '') }));
 
   const stamp = h('small', { text: p.noteAt ? t('noteWritten', rel(p.noteAt)) : '' });
@@ -810,10 +973,13 @@ function renderDetail() {
   const addIn = h('input', { class: 'field', placeholder: t('addStepPh'), 'aria-label': t('newStep') });
   detail.append(h('form', { class: 'addt', autocomplete: 'off', onsubmit: (e) => {
     e.preventDefault(); const v = addIn.value.trim(); if (!v) return;
-    p.tasks.push({ id: uid(), text: v, s: 0 }); touch(p); save(); render();
+    const q = parseQuick(v);
+    const nt = { id: uid(), text: q.text, s: 0 };
+    if (q.who) nt.who = q.who; if (q.date) nt.date = q.date; if (q.time) nt.time = q.time; if (q.urgent) nt.urgent = true;
+    p.tasks.push(nt); touch(p); save(); render();
     const f = detail.querySelector('.addt input'); if (f) f.focus();
   } }, addIn, h('button', { class: 'btn', type: 'submit', text: t('add') })));
-  detail.append(h('p', { class: 'legend', text: t('legend') }));
+  detail.append(h('p', { class: 'legend', text: t('legend') }), h('p', { class: 'legend', text: t('quickHint') }));
 
   if (closed.length) {
     const dg = h('details', { class: 'donegrp' }, h('summary', { text: t('doneGroup', n(closed.length)) }));
@@ -834,13 +1000,121 @@ function renderDetail() {
     delBtn));
 }
 
+/* ---------------- smart quick add ---------------- */
+function parseQuick(raw) {
+  let s = ' ' + raw.replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d))) + ' ';
+  const out = {};
+  if (/!/.test(s)) { out.urgent = true; s = s.replace(/!/g, ' '); }
+  const at = s.indexOf('@');
+  if (at >= 0) {
+    const rest = s.slice(at + 1);
+    const names = (state.team || []).map((m) => m.name).filter(Boolean).sort((a, b) => b.length - a.length);
+    const found = names.find((nm) => norm(rest).startsWith(norm(nm)));
+    if (found) { out.who = found; s = s.slice(0, at) + ' ' + rest.slice(found.length); }
+    else { const m = rest.match(/^(\S+)/); if (m) { out.who = m[1]; s = s.slice(0, at) + ' ' + rest.slice(m[1].length); } }
+  }
+  let m = s.match(/\s(\d{1,2})[:.](\d{2})\s*(ص|م|am|pm)?(?=\s)/i);
+  if (!m) m = s.match(/\s(?:الساعة|الساعه|at|u)\s+(\d{1,2})()\s*(ص|م|am|pm)?(?=\s)/i);
+  if (m) {
+    let hh = +m[1]; const mm = +(m[2] || 0), ap = (m[3] || '').toLowerCase();
+    if ((ap === 'م' || ap === 'pm') && hh < 12) hh += 12;
+    if ((ap === 'ص' || ap === 'am') && hh === 12) hh = 0;
+    if (hh < 24 && mm < 60) { out.time = pad(hh) + ':' + pad(mm); s = s.replace(m[0], ' '); }
+  }
+  const D = [[/\s(بعد بكر[ةه]|prekosjutra|prekosutra|day after tomorrow)(?=\s)/i, 2], [/\s(النهارده|النهاردة|اليوم|today|danas)(?=\s)/i, 0], [/\s(بكر[ةه]|tomorrow|sjutra|sutra)(?=\s)/i, 1]];
+  for (const [re, add] of D) { const mm2 = s.match(re); if (mm2) { const d = new Date(); d.setDate(d.getDate() + add); out.date = dstr(d); s = s.replace(mm2[0], ' '); break; } }
+  if (out.time && !out.date) out.date = todayStr();
+  out.text = s.replace(/\s+/g, ' ').trim() || raw.trim();
+  return out;
+}
+
+/* ---------------- dashboard ---------------- */
+function openDash() {
+  const now = Date.now(), wk = now - 7 * 86400000;
+  const tasks = allTasks().filter(({ p }) => projOK(p) && !p.archived);
+  const K = { open: 0, over: 0, review: 0, fol: 0, done7: 0 };
+  const per = {};
+  const lastAct = (x) => Math.max(x.startedAt || 0, x.doneAt || 0, ...((x.log || []).map((e) => e.at || 0)));
+  tasks.forEach(({ t: x }) => {
+    const k = x.who ? norm(x.who) : '';
+    const r = per[k] = per[k] || { name: x.who || t('unassigned'), open: 0, over: 0, doing: 0, done7: 0, review: 0, last: 0 };
+    r.last = Math.max(r.last, lastAct(x));
+    if (x.s !== 2) {
+      K.open++; r.open++;
+      if (x.s === 1) r.doing++;
+      if (dueKind(x) === 'over') { K.over++; r.over++; }
+      if (x.follow && x.follow <= now) K.fol++;
+    } else {
+      if (x.review === 'pending') { K.review++; r.review++; }
+      if ((x.doneAt || 0) >= wk) { K.done7++; r.done7++; }
+    }
+  });
+  const d0 = dept(deptFilter);
+  const box = h('div', { class: 'box', role: 'dialog', 'aria-label': t('dashboard') });
+  box.append(h('h2', { text: t('dashboard') + (d0 ? ' · ' + d0.icon + ' ' + d0.name : '') }));
+  const tiles = h('div', { class: 'tiles' });
+  [['open', 'kOpen'], ['over', 'kOver'], ['review', 'kReview'], ['fol', 'kFol'], ['done7', 'kDone7']].forEach(([k, l]) =>
+    tiles.append(h('div', { class: 'tile' + (k === 'over' && K.over ? ' bad' : '') + (k === 'review' && K.review ? ' warn' : '') }, h('b', { text: n(K[k]) }), h('span', { text: t(l) }))));
+  box.append(tiles);
+  if (!deptFilter) {
+    box.append(h('div', { class: 'subhead', text: t('byDept') }));
+    const tb = h('div', { class: 'dtable' });
+    state.depts.forEach((d) => {
+      const ts = allTasks().filter(({ p }) => p.dept === d.id && !p.archived).map(({ t: x }) => x);
+      const o = ts.filter((x) => x.s !== 2).length, ov = ts.filter((x) => dueKind(x) === 'over').length;
+      tb.append(h('button', { class: 'drow', type: 'button', onclick: () => { deptFilter = d.id; try { localStorage.setItem('mashari3-dept', d.id); } catch (e) {} renderList(); openDash(); } },
+        h('span', { text: d.icon + ' ' + d.name }), h('span', { text: t('kOpen') + ' ' + n(o) }), h('span', { class: ov ? 'bad' : '', text: t('kOver') + ' ' + n(ov) })));
+    });
+    box.append(tb);
+  }
+  box.append(h('div', { class: 'subhead', text: t('byPerson') }));
+  const pt = h('div', { class: 'dtable' });
+  Object.values(per).sort((a, b) => b.over - a.over || b.open - a.open).forEach((r) => {
+    pt.append(h('button', { class: 'drow', type: 'button', onclick: () => { if (r.name === t('unassigned')) return; closeSheet(); query = r.name; $('q').value = r.name; select(null, false); } },
+      h('span', null, h('b', { text: r.name }), h('small', { class: 'from', text: r.last ? ' · ' + t('lastAct', rel(r.last)) : '' })),
+      h('span', { text: t('kOpen') + ' ' + n(r.open) + (r.doing ? ' · ' + t('sDoing') + ' ' + n(r.doing) : '') }),
+      h('span', { class: r.over ? 'bad' : '', text: t('kOver') + ' ' + n(r.over) + (r.review ? ' · ⏳ ' + n(r.review) : '') + ' · ✓ ' + n(r.done7) })));
+  });
+  if (!Object.keys(per).length) pt.append(h('p', { class: 'muted', text: t('noLog') }));
+  box.append(pt);
+  box.append(h('div', { class: 'shareline' },
+    h('button', { class: 'btn wa', text: t('sendReport'), onclick: () => {
+      const L = ['📊 ' + t('dashboard') + (d0 ? ' · ' + d0.name : '') + ' · ' + fmtTs(now, false),
+        t('kOpen') + ': ' + K.open + ' · ' + t('kOver') + ': ' + K.over + ' · ' + t('kReview') + ': ' + K.review + ' · ' + t('kDone7') + ': ' + K.done7, ''];
+      Object.values(per).forEach((r) => L.push('• ' + r.name + ': ' + t('kOpen') + ' ' + r.open + ', ' + t('kOver') + ' ' + r.over + ', ✓ ' + r.done7));
+      openExternal('https://wa.me/?text=' + encodeURIComponent(L.join('\n')));
+    } }),
+    deptFilter ? h('button', { class: 'btn', text: t('allDepts'), onclick: () => { deptFilter = ''; try { localStorage.setItem('mashari3-dept', ''); } catch (e) {} renderList(); openDash(); } }) : null,
+    h('button', { class: 'btn ghost', text: t('close'), onclick: closeSheet })));
+  openSheet(box);
+}
+$('dashBtn').addEventListener('click', openDash);
+
+/* ---------------- departments sheet ---------------- */
+function openDepts() {
+  const box = h('div', { class: 'box', role: 'dialog', 'aria-label': t('depts') });
+  box.append(h('h2', { text: t('depts') }));
+  state.depts.forEach((d) => box.append(h('div', { class: 'member' }, h('div', { class: 'row', style: 'grid-template-columns:64px 1fr' },
+    h('input', { class: 'field', value: d.icon, 'aria-label': 'icon', style: 'text-align:center', onchange: (e) => { d.icon = e.target.value.trim() || '📁'; save(); render(); } }),
+    h('input', { class: 'field', value: d.name, placeholder: t('deptName'), onchange: (e) => { d.name = e.target.value.trim(); save(); render(); } })),
+    h('button', { class: 'btn ghost', type: 'button', text: t('remove'), onclick: () => {
+      state.depts = state.depts.filter((y) => y !== d);
+      state.projects.forEach((p) => { if (p.dept === d.id) p.dept = ''; });
+      if (deptFilter === d.id) deptFilter = '';
+      save(); render(); openDepts();
+    } }))));
+  box.append(h('button', { class: 'btn', text: t('addDept'), onclick: () => { state.depts.push({ id: 'd' + uid(), icon: '📁', name: '' }); save(); openDepts(); } }));
+  box.append(h('button', { class: 'btn ghost', text: t('close'), onclick: () => { state.depts = state.depts.filter((d) => d.name); save(); render(); openSettings(); } }));
+  openSheet(box);
+}
+
 /* ---------------- add project ---------------- */
 const addForm = $('addForm'), addName = $('addName');
 function openAdd() { addForm.classList.add('open'); addName.focus(); }
 $('addBtn').addEventListener('click', () => (addForm.classList.contains('open') ? addForm.classList.remove('open') : openAdd()));
 addForm.addEventListener('submit', (e) => {
   e.preventDefault(); const v = addName.value.trim(); if (!v) return;
-  const p = { id: 'p' + uid(), name: v, note: '', noteAt: 0, tasks: [], createdAt: Date.now(), updatedAt: Date.now() };
+  const p = { id: 'p' + uid(), name: v, note: '', noteAt: 0, tasks: [], createdAt: Date.now(), updatedAt: Date.now(), dept: deptFilter };
   state.projects.push(p); addName.value = ''; addForm.classList.remove('open'); save(); select(p.id);
 });
 $('q').addEventListener('input', (e) => { query = e.target.value; renderList(); });
@@ -862,6 +1136,7 @@ function openSettings() {
     h('input', { class: 'field', value: state.profile.name || '', onchange: (e) => { state.profile.name = e.target.value.trim(); allTasks().forEach(({ t: x }) => { if (x.shareEmail) delete x._sh; }); save(); } })));
 
   box.append(h('button', { class: 'btn', text: t('team') + ' (' + n((state.team || []).length) + ')', onclick: openTeam }));
+  box.append(h('button', { class: 'btn', text: t('depts') + ' (' + n(state.depts.length) + ')', onclick: openDepts }));
   const dg = h('input', { type: 'checkbox', onchange: (e) => { state.profile.digest = e.target.checked; save(); } });
   dg.checked = state.profile.digest !== false;
   box.append(h('label', { class: 'check' }, dg, t('digestToggle')));
@@ -888,6 +1163,7 @@ function openSettings() {
   openSheet(box);
 }
 $('menuBtn').addEventListener('click', openSettings);
+$('langBtn').addEventListener('click', () => { const o = ['ar', 'en', 'me']; setLang(o[(o.indexOf(lang) + 1) % 3]); toast(t('langName')); });
 
 function openTeam() {
   const box = h('div', { class: 'box', role: 'dialog', 'aria-label': t('team') });
@@ -903,6 +1179,10 @@ function openTeam() {
       h('div', { class: 'row' },
         h('input', { class: 'field', value: m.phone || '', placeholder: t('phone'), dir: 'ltr', inputmode: 'tel', onchange: (e) => { m.phone = e.target.value.trim(); save(); } }),
         h('input', { class: 'field', value: m.email || '', placeholder: t('emailOpt'), dir: 'ltr', type: 'email', onchange: (e) => { m.email = e.target.value.trim().toLowerCase(); changed(); } })),
+      (() => { const sel = h('select', { class: 'field', 'aria-label': t('depts'), onchange: (e) => { m.dept = e.target.value; save(); } });
+        sel.append(h('option', { value: '', text: t('noDept') }));
+        state.depts.forEach((d) => { const o = h('option', { value: d.id, text: d.icon + ' ' + d.name }); if (m.dept === d.id) o.selected = true; sel.append(o); });
+        return sel; })(),
       h('button', { class: 'btn ghost', type: 'button', text: t('remove'), onclick: () => { state.team = state.team.filter((y) => y !== m); changed(); openTeam(); } }));
     box.append(card);
   });
