@@ -21,7 +21,7 @@ window.L = {
     progress: (d, t, p) => d + ' من ' + t + ' خطوات خلصت (' + p + '٪)', noSteps: 'لسه مفيش خطوات', lastEdit: (r) => 'آخر تعديل ' + r,
     whereStopped: 'وقفت فين؟', notePh: 'آخر حاجة عملتها، ومستني إيه، والخطوة الجاية…', noteWritten: (r) => 'اتكتبت ' + r,
     doingIn: 'شغال في:', nextStep: 'الخطوة الجاية:', plan: 'الخطة', left: (n) => n + ' فاضلين',
-    addStepPh: 'أضف خطوة…', newStep: 'خطوة جديدة', step: 'الخطوة',
+    addStepPh: 'أضف مهمة… (مثال: @أحمد بكرة ١٠:٠٠ !)', newStep: 'خطوة جديدة', step: 'الخطوة',
     legend: 'الدايرة: فاضية = لسه، نصها = شغال، مليانة = خلصت. ودوس ⋯ عشان تحدد المسؤول والميعاد والمتابعة، أو تبعتها لحد.',
     doneGroup: (n) => 'خلصت (' + n + ')', deleteProject: 'امسح المشروع', sure: 'متأكد؟ اضغط تاني', deleteStep: 'امسح الخطوة',
     stoppedAt: 'وقفت عند: ', nextShort: 'الجاي: ', doneOf: (d, t) => d + ' من ' + t + ' خلصوا', noStepsShort: 'من غير خطوات',
@@ -88,6 +88,19 @@ window.L = {
     logA: { assigned: 'بعت المهمة', seen: 'شافها', start: 'بدأ', done: 'خلّصها', reopen: 'رجّعها لسه', returned: '↩ رجّعها للتعديل:', approved: '✓ راجعها وتمام', photo: '📷 بعت صورة:' },
     quickHint: 'نصيحة: اكتب «تنظيف غرفة ٥ @أحمد بكرة ١٠:٠٠ !» وهيتحدد المسؤول والميعاد والعاجل لوحدهم.',
     sendTasks: '💬 ابعتله مهامه', tasksFor: (n) => 'مهامك يا ' + n + ':',
+
+    installedSum: (a, b) => '📲 ' + a + ' من ' + b + ' نزّلوا الأبلكيشن', installed: (r) => '✓ نزّل الأبلكيشن · آخر ظهور ' + r, notInstalled: '✗ لسه ما سجّلش',
+    needEmail: 'اكتب إيميله عشان تبعتله دعوة وتعرف لو نزّل الأبلكيشن', invite: '📲 ابعتله دعوة', copyLink: '🔗 انسخ لينك تحميل الأبلكيشن', copied: 'اتنسخ ✓',
+    inviteMsg: (o) => 'أهلاً ' + o.name + ' 👋\nعشان تستلم مهامك وتتابعها، نزّل أبلكيشن «مشاريعي» من اللينك ده:\n' + o.apk +
+      '\n\nخطوات التثبيت:\n١. افتح اللينك ونزّل الملف. لو Chrome حذّرك اختار «تنزيل على أي حال».\n٢. افتح الملف واختار «تثبيت». لو التليفون رفض، اسمح بالتثبيت من المصدر ده (وفي سامسونج اقفل Auto Blocker مؤقتاً).\n٣. افتح الأبلكيشن، ودوس «أول مرة؟ اعمل حساب»، وسجّل بالإيميل ده بالظبط:\n' + o.email +
+      '\n\nلو تليفونك آيفون أو عايز تفتح من الكمبيوتر: ' + o.web + (o.from ? '\n\n' + o.from : ''),
+
+    pWho: 'المسؤول', pDue: 'الميعاد', pPickup: 'الاستلام', pFollow: 'فكّرني أراجع', fNone: 'مفيش', fCustom: '📅 يوم وساعة محددة…',
+    pPriority: 'الأولوية', normal: 'عادي', pType: 'النوع', typeTask: 'مهمة', typeTx: '📄 معاملة', secTx: 'بيانات المعاملة', pStatus: 'الحالة',
+    waInApp: (l) => '📲 المهمة اتسجلت عندك في الأبلكيشن أوتوماتيك. افتحها من هنا:\n' + l,
+    waNoApp: (apk, em) => 'لو لسه ما عندكش الأبلكيشن، نزّله من هنا: ' + apk + '\nوسجّل بالإيميل ده: ' + em + '، والمهمة هتلاقيها مستنياك.',
+    inApp: (n) => '📲 وصلت لأبلكيشن ' + n + ' أوتوماتيك', helpTitle: 'إزاي أضيف بسرعة؟', tplApplied: (n) => '📋 اتضافت خطوات قالب: ' + n,
+    roles: ['موظف', 'رئيس قسم', 'مدير'], company: '🏢 الشركة', companyHint: 'كل المهام اللي رؤساء الأقسام والمديرين بعتوها للموظفين عندهم.', companyEmpty: 'لسه مفيش مهام من رؤساء الأقسام.',
     pct: '٪',
   },
 
@@ -112,7 +125,7 @@ window.L = {
     progress: (d, t, p) => d + ' of ' + t + ' steps done (' + p + '%)', noSteps: 'No steps yet', lastEdit: (r) => 'Edited ' + r,
     whereStopped: 'Where did I stop?', notePh: 'What I did last, what I’m waiting on, and the next step…', noteWritten: (r) => 'Written ' + r,
     doingIn: 'Working on:', nextStep: 'Next step:', plan: 'Plan', left: (n) => n + ' left',
-    addStepPh: 'Add a step…', newStep: 'New step', step: 'Step',
+    addStepPh: 'Add a task… (e.g. @Marko tomorrow 10:00 !)', newStep: 'New step', step: 'Step',
     legend: 'Circle: empty = to do, half = in progress, full = done. Tap ⋯ to set who, a date, a follow-up, or send it to someone.',
     doneGroup: (n) => 'Done (' + n + ')', deleteProject: 'Delete project', sure: 'Sure? Tap again', deleteStep: 'Delete step',
     stoppedAt: 'Stopped at: ', nextShort: 'Next: ', doneOf: (d, t) => d + ' of ' + t + ' done', noStepsShort: 'No steps',
@@ -179,6 +192,19 @@ window.L = {
     logA: { assigned: 'Sent the task', seen: 'Seen', start: 'Started', done: 'Finished', reopen: 'Reopened', returned: '↩ Sent back:', approved: '✓ Approved', photo: '📷 Sent a photo:' },
     quickHint: 'Tip: type “Clean room 5 @Marko tomorrow 10:00 !” and the person, time and urgency are set for you.',
     sendTasks: '💬 Send their tasks', tasksFor: (n) => n + ', your tasks:',
+
+    installedSum: (a, b) => '📲 ' + a + ' of ' + b + ' have the app', installed: (r) => '✓ Has the app · last seen ' + r, notInstalled: '✗ Not signed up yet',
+    needEmail: 'Add their email to invite them and see if they installed the app', invite: '📲 Send invite', copyLink: '🔗 Copy app download link', copied: 'Copied ✓',
+    inviteMsg: (o) => 'Hi ' + o.name + ' 👋\nTo receive and track your tasks, download the “My Projects” app here:\n' + o.apk +
+      '\n\nHow to install:\n1. Open the link and download the file. If Chrome warns you, choose “Download anyway”.\n2. Open the file and tap “Install”. If the phone blocks it, allow installs from this source (on Samsung, turn off Auto Blocker for a moment).\n3. Open the app, tap “First time? Create account” and sign up with exactly this email:\n' + o.email +
+      '\n\nOn an iPhone or a computer, use: ' + o.web + (o.from ? '\n\n' + o.from : ''),
+
+    pWho: 'Assignee', pDue: 'Due', pPickup: 'Pickup', pFollow: 'Check in', fNone: 'None', fCustom: '📅 Pick a date & time…',
+    pPriority: 'Priority', normal: 'Normal', pType: 'Type', typeTask: 'Task', typeTx: '📄 Paperwork', secTx: 'Paperwork details', pStatus: 'Status',
+    waInApp: (l) => '📲 This task is already in your app. Open it here:\n' + l,
+    waNoApp: (apk, em) => 'If you don’t have the app yet, download it here: ' + apk + '\nand sign up with this email: ' + em + '. The task will be waiting for you.',
+    inApp: (n) => '📲 Sent to ' + n + '’s app automatically', helpTitle: 'How to add fast?', tplApplied: (n) => '📋 Checklist added from template: ' + n,
+    roles: ['Staff', 'Department head', 'Manager'], company: '🏢 Company', companyHint: 'Every task department heads and managers have assigned to their staff.', companyEmpty: 'No tasks from department heads yet.',
     pct: '%',
   },
 
@@ -203,7 +229,7 @@ window.L = {
     progress: (d, t, p) => d + ' od ' + t + ' koraka završeno (' + p + '%)', noSteps: 'Još nema koraka', lastEdit: (r) => 'Izmijenjeno ' + r,
     whereStopped: 'Gdje sam stao?', notePh: 'Šta sam posljednje uradio, šta čekam i koji je sljedeći korak…', noteWritten: (r) => 'Zapisano ' + r,
     doingIn: 'Radim na:', nextStep: 'Sljedeći korak:', plan: 'Plan', left: (n) => 'Preostalo: ' + n,
-    addStepPh: 'Dodaj korak…', newStep: 'Novi korak', step: 'Korak',
+    addStepPh: 'Dodaj zadatak… (npr. @Marko sjutra 10:00 !)', newStep: 'Novi korak', step: 'Korak',
     legend: 'Krug: prazan = za uraditi, pola = u toku, pun = završeno. Dodirni ⋯ za osobu, datum, provjeru ili slanje nekome.',
     doneGroup: (n) => 'Završeno (' + n + ')', deleteProject: 'Obriši projekat', sure: 'Sigurno? Dodirni ponovo', deleteStep: 'Obriši korak',
     stoppedAt: 'Stao sam kod: ', nextShort: 'Sljedeće: ', doneOf: (d, t) => d + ' od ' + t + ' završeno', noStepsShort: 'Bez koraka',
@@ -270,6 +296,19 @@ window.L = {
     logA: { assigned: 'Poslao zadatak', seen: 'Viđeno', start: 'Počeo', done: 'Završio', reopen: 'Ponovo otvorio', returned: '↩ Vratio na doradu:', approved: '✓ Odobrio', photo: '📷 Poslao fotografiju:' },
     quickHint: 'Savjet: upiši „Očisti sobu 5 @Marko sjutra 10:00 !“ i osoba, vrijeme i hitnost se postave sami.',
     sendTasks: '💬 Pošalji zadatke', tasksFor: (n) => n + ', tvoji zadaci:',
+
+    installedSum: (a, b) => '📲 Aplikaciju ima ' + a + ' od ' + b, installed: (r) => '✓ Ima aplikaciju · posljednji put ' + r, notInstalled: '✗ Još se nije prijavio',
+    needEmail: 'Dodaj email da pošalješ pozivnicu i vidiš da li je instalirao', invite: '📲 Pošalji pozivnicu', copyLink: '🔗 Kopiraj link za aplikaciju', copied: 'Kopirano ✓',
+    inviteMsg: (o) => 'Zdravo ' + o.name + ' 👋\nDa primaš i pratiš svoje zadatke, preuzmi aplikaciju „Moji projekti“ ovdje:\n' + o.apk +
+      '\n\nKako da instaliraš:\n1. Otvori link i preuzmi fajl. Ako Chrome upozori, izaberi „Ipak preuzmi“.\n2. Otvori fajl i dodirni „Instaliraj“. Ako telefon blokira, dozvoli instalaciju iz ovog izvora (na Samsungu privremeno isključi Auto Blocker).\n3. Otvori aplikaciju, dodirni „Prvi put? Napravi nalog“ i registruj se tačno sa ovim emailom:\n' + o.email +
+      '\n\nNa iPhoneu ili računaru koristi: ' + o.web + (o.from ? '\n\n' + o.from : ''),
+
+    pWho: 'Odgovorni', pDue: 'Rok', pPickup: 'Preuzimanje', pFollow: 'Podsjeti me', fNone: 'Ništa', fCustom: '📅 Izaberi dan i vrijeme…',
+    pPriority: 'Prioritet', normal: 'Običan', pType: 'Vrsta', typeTask: 'Zadatak', typeTx: '📄 Predmet', secTx: 'Podaci o predmetu', pStatus: 'Status',
+    waInApp: (l) => '📲 Zadatak je već u tvojoj aplikaciji. Otvori ga ovdje:\n' + l,
+    waNoApp: (apk, em) => 'Ako još nemaš aplikaciju, preuzmi je ovdje: ' + apk + '\ni registruj se sa ovim emailom: ' + em + '. Zadatak te čeka.',
+    inApp: (n) => '📲 Automatski poslato u aplikaciju: ' + n, helpTitle: 'Kako brzo dodati?', tplApplied: (n) => '📋 Dodata lista iz šablona: ' + n,
+    roles: ['Zaposleni', 'Šef odjeljenja', 'Menadžer'], company: '🏢 Kompanija', companyHint: 'Svi zadaci koje su šefovi odjeljenja i menadžeri dali svojim zaposlenima.', companyEmpty: 'Još nema zadataka od šefova odjeljenja.',
     pct: '%',
   },
 };

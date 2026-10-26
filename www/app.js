@@ -5,6 +5,8 @@ const isNative = !!(CAP && CAP.isNativePlatform && CAP.isNativePlatform());
 const LN = isNative && CAP.registerPlugin ? CAP.registerPlugin('LocalNotifications') : null;
 const FB = 'https://www.gstatic.com/firebasejs/10.12.2/';
 const LKEY = 'mashari3-board', LANGKEY = 'mashari3-lang';
+const WEB_URL = 'https://medosallam81-prog.github.io/mashari3/';
+const APK_URL = WEB_URL + 'mashari3.apk';
 
 let state = { projects: [], team: [], profile: {} };
 let selected = null, openTask = null, openAssigned = null, query = '';
@@ -18,6 +20,9 @@ const projOK = (p) => !deptFilter || p.dept === deptFilter;
 const dept = (id) => (state.depts || []).find((d) => d.id === id);
 const myName = () => (state.profile.name || '').trim() || (cloud && cloud.user ? cloud.user.email : '') || t('me');
 const NKEY = 'mashari3-notified';
+let myOrg = null, orgResolved = false, orgTasks = [], openOrg = null, customFollow = null, pendingOpen = null;
+const openSecs = new Set();
+{ const m = (location.hash || '').match(/^#a_(\w+)/); if (m) pendingOpen = m[1]; }
 let notified = new Set(); try { notified = new Set(JSON.parse(localStorage.getItem(NKEY) || '[]')); } catch (e) {}
 function markNotified(k) { notified.add(k); try { localStorage.setItem(NKEY, JSON.stringify([...notified].slice(-300))); } catch (e) {} }
 
@@ -212,10 +217,10 @@ function shareFields(p, x) {
     assigneeEmail: x.shareEmail, assigneeName: x.who || '',
     projectName: p.name, text: x.text, date: x.date || '', time: x.time || '',
     kind: x.kind || '', stage: x.stage || 0, office: x.office || '', ref: x.ref || '', s: x.s,
-    taskId: x.id, brief: x.brief || '', urgent: !!x.urgent, checks: x.checks || [],
+    taskId: x.id, brief: x.brief || '', urgent: !!x.urgent, checks: x.checks || [], org: orgUid(),
   };
 }
-function shareHash(p, x) { return JSON.stringify([p.name, x.text, x.date, x.time, x.kind, x.stage, x.office, x.ref, x.s, x.shareEmail, x.who, state.profile.name, x.brief, x.urgent, x.checks]); }
+function shareHash(p, x) { return JSON.stringify([p.name, x.text, x.date, x.time, x.kind, x.stage, x.office, x.ref, x.s, x.shareEmail, x.who, state.profile.name, x.brief, x.urgent, x.checks, orgUid()]); }
 let pendingUnshare = [];
 function unshare(x) { if (x.shareId) pendingUnshare.push(x.shareId); delete x.shareId; delete x.shareEmail; delete x._sh; delete x.seenAt; delete x.reply; }
 function pushShared() {
@@ -225,7 +230,7 @@ function pushShared() {
     F.deleteDoc(F.doc(db, 'shared', sid)).catch((e) => console.warn(e));
     ownerFiles((d) => F.updateDoc(d.ref, { assigneeEmail: '', shareId: '' }).catch(() => {}), ['shareId', sid]);
   });
-  if (!ownerSharedReady) return;
+  if (!ownerSharedReady || !orgResolved) return;
   allTasks().forEach(({ p, t: x }) => {
     if (!x.shareEmail) return;
     if (!x.shareId) x.shareId = cloud.user.uid.slice(0, 8) + '_' + uid() + uid();
@@ -331,6 +336,7 @@ function startShared(F, db, user) {
       const k = 'n:' + x.id;
       if (!notified.has(k)) { markNotified(k); if (x.s !== 2) notifyNow(t('newAssigned', x.ownerName || x.ownerEmail), x.text, { aid: x.id }); }
     });
+    if (pendingOpen && toMe.some((x) => x.id === pendingOpen)) { openAssigned = pendingOpen; pendingOpen = null; select(null, false); }
     renderList(); scheduleNotifs();
   }, (e) => console.warn('assigned', e)));
   return () => subs.forEach((f) => f());
@@ -357,6 +363,7 @@ async function compressImage(file) {
 }
 function filesQuery(key) {
   const { F, db, user } = cloud, col = F.collection(db, 'files'), id = key.slice(2);
+  if (key[0] === 'g') return F.query(col, F.where('org', '==', user.uid), F.where('shareId', '==', id));
   return key[0] === 'o'
     ? F.query(col, F.where('ownerUid', '==', user.uid), F.where('taskId', '==', id))
     : F.query(col, F.where('assigneeEmail', '==', (user.email || '').toLowerCase()), F.where('shareId', '==', id));
@@ -382,7 +389,7 @@ function gallery(key) {
     h('img', { src: f.data, alt: t(f.kind), loading: 'lazy' }), h('span', { class: 'tl ' + f.kind, text: t(f.kind) }))));
   box.append(grid);
   const acts = h('div', { class: 'quick' });
-  (ctx.mode === 'o' ? ['before', 'after', 'doc'] : ['after', 'doc']).forEach((k) =>
+  (ctx.mode === 'g' ? [] : ctx.mode === 'o' ? ['before', 'after', 'doc'] : ['after', 'doc']).forEach((k) =>
     acts.append(h('button', { class: 'btn', type: 'button', text: t('add_' + k), onclick: () => pickFile(key, k) })));
   box.append(acts);
   return box;
@@ -402,10 +409,10 @@ async function uploadFile(key, kind, file) {
   const { F, db, user } = cloud;
   const d = { kind, data, at: Date.now(), by: user.uid, byName: (state.profile.name || '').trim() || user.email };
   if (ctx.mode === 'o') {
-    Object.assign(d, { ownerUid: user.uid, taskId: ctx.x.id });
+    Object.assign(d, { ownerUid: user.uid, taskId: ctx.x.id, org: orgUid() });
     if (ctx.x.shareEmail && ctx.x.shareId) Object.assign(d, { assigneeEmail: ctx.x.shareEmail, shareId: ctx.x.shareId });
   } else {
-    Object.assign(d, { ownerUid: ctx.x.ownerUid, taskId: ctx.x.taskId || '', assigneeEmail: (user.email || '').toLowerCase(), shareId: ctx.x.id });
+    Object.assign(d, { ownerUid: ctx.x.ownerUid, taskId: ctx.x.taskId || '', assigneeEmail: (user.email || '').toLowerCase(), shareId: ctx.x.id, org: ctx.x.org || '' });
   }
   try {
     await F.addDoc(F.collection(db, 'files'), d);
@@ -435,14 +442,128 @@ function ownerFiles(cb, where) {
 function linkFiles(x) { ownerFiles((d) => cloud.F.updateDoc(d.ref, { assigneeEmail: x.shareEmail, shareId: x.shareId }).catch(() => {}), ['taskId', x.id]); }
 function deleteTaskFiles(x) { ownerFiles((d) => cloud.F.deleteDoc(d.ref).catch(() => {}), ['taskId', x.id]); }
 
+/* ---------------- company / organization ---------------- */
+function orgUid() { return myOrg && myOrg.orgUid ? myOrg.orgUid : (cloud && cloud.user ? cloud.user.uid : ''); }
+const isGM = () => !!(cloud && myOrg && myOrg.orgUid === cloud.user.uid);
+async function resolveOrg() {
+  const { F, db, user } = cloud;
+  try {
+    const d = user.email ? await F.getDoc(F.doc(db, 'orgIndex', user.email.toLowerCase())) : null;
+    myOrg = d && d.exists() && d.data().orgUid !== user.uid ? d.data() : { orgUid: user.uid, role: 'gm' };
+  } catch (e) { console.warn('org', e); myOrg = { orgUid: user.uid, role: 'gm' }; }
+  orgResolved = true;
+  if (isGM()) { syncOrgIndex(); watchOrg(); }
+  save(); renderList();
+}
+let orgSyncTimer = null;
+function syncOrgIndex() {
+  clearTimeout(orgSyncTimer);
+  orgSyncTimer = setTimeout(() => {
+    if (!isGM()) return;
+    const { F, db, user } = cloud;
+    const now = (state.team || []).filter((m) => m.email).map((m) => m.email.trim().toLowerCase());
+    (state.profile.orgSynced || []).filter((e) => !now.includes(e)).forEach((e) => F.deleteDoc(F.doc(db, 'orgIndex', e)).catch(() => {}));
+    (state.team || []).filter((m) => m.email).forEach((m) => F.setDoc(F.doc(db, 'orgIndex', m.email.trim().toLowerCase()),
+      { orgUid: user.uid, role: m.role || 'staff', dept: m.dept || '', deptName: dept(m.dept) ? dept(m.dept).name : '', name: m.name || '', gmName: myName() }, { merge: true }).catch((e) => console.warn('orgIndex', e)));
+    if (JSON.stringify(state.profile.orgSynced || []) !== JSON.stringify(now)) { state.profile.orgSynced = now; save(); }
+  }, 1500);
+}
+let orgUnsub = null;
+function watchOrg() {
+  if (orgUnsub) orgUnsub();
+  const { F, db, user } = cloud;
+  orgUnsub = F.onSnapshot(F.query(F.collection(db, 'shared'), F.where('org', '==', user.uid)), (snap) => {
+    orgTasks = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((x) => x.ownerUid !== user.uid);
+    $('orgBtn').hidden = !orgTasks.length;
+    if ($('sheetRoot').querySelector('[data-org]')) openCompany();
+  }, (e) => console.warn('orgTasks', e));
+}
+function openCompany() {
+  const now = Date.now(), wk = now - 7 * 86400000;
+  const box = h('div', { class: 'box', role: 'dialog', 'aria-label': t('company'), 'data-org': '1' });
+  box.append(h('h2', { text: t('company') }), h('p', { class: 'muted', text: t('companyHint') }));
+  const K = { open: 0, over: 0, review: 0, done7: 0 };
+  orgTasks.forEach((x) => { if (x.s !== 2) { K.open++; if (dueKind(x) === 'over') K.over++; } else if ((x.updatedAt || 0) >= wk) K.done7++; });
+  const tiles = h('div', { class: 'tiles' });
+  [['open', 'kOpen'], ['over', 'kOver'], ['done7', 'kDone7']].forEach(([k, l]) => tiles.append(h('div', { class: 'tile' + (k === 'over' && K.over ? ' bad' : '') }, h('b', { text: n(K[k]) }), h('span', { text: t(l) }))));
+  box.append(tiles);
+  const groups = {};
+  orgTasks.slice().sort((a, b) => (a.s === 2) - (b.s === 2) || (dueKind(b) === 'over') - (dueKind(a) === 'over')).forEach((x) => { const k = x.ownerName || x.ownerEmail; (groups[k] = groups[k] || []).push(x); });
+  if (!orgTasks.length) box.append(h('p', { class: 'muted', text: t('companyEmpty') }));
+  Object.entries(groups).forEach(([owner, list]) => {
+    box.append(h('div', { class: 'subhead', text: '👤 ' + owner }));
+    const ul = h('ul', { class: 'assigned' });
+    list.forEach((x) => {
+      const isOpen = openOrg === x.id, dk = dueKind(x);
+      const li = h('li', null, h('div', { class: 'arow', style: 'cursor:pointer', onclick: () => { openOrg = isOpen ? null : x.id; openCompany(); } },
+        statusTag(x), h('div', { class: 'tbody' }, h('div', { text: (x.urgent ? '🔴 ' : '') + x.text }),
+          h('div', { class: 'from', text: '→ ' + (x.assigneeName || x.assigneeEmail) + ' · ' + x.projectName + (x.checks && x.checks.length ? ' · ☑ ' + checkCount(x.checks) : '') + (x.seenAt ? ' · 👁' : '') }),
+          x.date ? h('span', { class: 'when ' + dk, text: (dk === 'over' ? t('late') : '') + fmtDue(x) }) : null)));
+      if (isOpen) {
+        galCtx['g:' + x.id] = { mode: 'g', x }; watchFiles('g:' + x.id);
+        li.append(h('div', { class: 'areply' }, x.brief ? h('p', { class: 'brief', text: x.brief }) : null,
+          gallery('g:' + x.id),
+          threadView(x.log, (m) => { const e = { a: 'msg', m, by: myName(), at: Date.now() }; cloud.F.updateDoc(cloud.F.doc(cloud.db, 'shared', x.id), { log: cloud.F.arrayUnion(e) }).catch(() => toast(t('syncErr'))); })));
+      }
+      ul.append(li);
+    });
+    box.append(ul);
+  });
+  box.append(h('button', { class: 'btn ghost', text: t('close'), onclick: () => { openOrg = null; closeSheet(); } }));
+  const sc = $('sheetRoot').querySelector('[data-org]'); const top = sc ? sc.scrollTop : 0;
+  openSheet(box); box.scrollTop = top;
+}
+
+/* ---------------- presence (who installed the app) ---------------- */
+let lastAnnounce = 0;
+function announce() {
+  if (!cloud || !cloud.user || !cloud.user.email || Date.now() - lastAnnounce < 30 * 60000) return;
+  lastAnnounce = Date.now();
+  const { F, db, user } = cloud;
+  F.setDoc(F.doc(db, 'members', user.email.toLowerCase()), { uid: user.uid, name: (state.profile.name || '').trim(), lastSeen: Date.now(), platform: isNative ? 'android' : 'web', lang }, { merge: true }).catch((e) => console.warn('presence', e));
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) announce(); });
+let memberStatus = {};
+async function loadMemberStatus() {
+  if (!cloud) return;
+  const { F, db } = cloud;
+  await Promise.all((state.team || []).filter((m) => m.email).map(async (m) => {
+    const em = m.email.trim().toLowerCase();
+    try { const d = await F.getDoc(F.doc(db, 'members', em)); memberStatus[em] = d.exists() ? d.data() : null; } catch (e) { memberStatus[em] = undefined; }
+  }));
+}
+function inviteLink(m) {
+  const L = window.L[m.lang || lang] || window.L[lang];
+  const msg = L.inviteMsg({ name: m.name || '', apk: APK_URL, web: WEB_URL, email: (m.email || '').trim().toLowerCase(), from: (state.profile.name || '').trim() });
+  const digits = m.phone ? m.phone.replace(/\D/g, '').replace(/^00/, '') : '';
+  return 'https://wa.me/' + digits + '?text=' + encodeURIComponent(msg);
+}
+
 /* ---------------- WhatsApp ---------------- */
+function autoShare(x) {
+  const m = member(x.who);
+  if (!cloud || !m || !m.email) return false;
+  const em = m.email.trim().toLowerCase();
+  if (x.shareEmail !== em) { if (x.shareEmail) unshare(x); x.shareEmail = em; delete x._sh; }
+  if (!x.shareId) x.shareId = cloud.user.uid.slice(0, 8) + '_' + uid() + uid();
+  return true;
+}
 function waLink(p, x) {
   const m = member(x.who);
+  const shared = autoShare(x);
   const digits = m && m.phone ? m.phone.replace(/\D/g, '').replace(/^00/, '') : '';
-  const msg = t('waMsg', {
+  const L = window.L[(m && m.lang) || lang] || window.L[lang];
+  let msg = L.waMsg({
     name: x.who || '', text: x.text, project: p.name, due: x.date ? fmtDue(x) : '',
-    follow: x.follow && x.follow > Date.now() ? fmtTs(x.follow) : '', from: (state.profile.name || '').trim(),
+    follow: x.follow && x.follow > Date.now() ? fmtTs(x.follow) : '', from: '',
   });
+  if (x.brief) msg += '\n📝 ' + x.brief;
+  if (x.checks && x.checks.length) msg += '\n' + x.checks.map((c) => '☐ ' + c.t).join('\n');
+  if (shared) {
+    msg += '\n\n' + L.waInApp(WEB_URL + '#a_' + x.shareId);
+    if (memberStatus[m.email.trim().toLowerCase()] === null) msg += '\n' + L.waNoApp(APK_URL, m.email.trim().toLowerCase());
+  }
+  const from = (state.profile.name || '').trim(); if (from) msg += '\n\n' + from;
   return 'https://wa.me/' + digits + '?text=' + encodeURIComponent(msg);
 }
 
@@ -672,18 +793,15 @@ function renderMine() {
       galCtx['a:' + x.id] = { mode: 'a', x }; watchFiles('a:' + x.id);
       const box = h('div', { class: 'areply' });
       if (x.kind === 'm') {
-        const stg = h('div', { class: 'stages' });
-        STG().forEach((s, k) => stg.append(h('button', { class: 'chip', 'aria-pressed': (x.stage || 0) === k ? 'true' : 'false', text: s, onclick: () => setS(x, k === 3 ? 2 : k === 0 ? 0 : 1, k) })));
-        box.append(stg);
+        box.append(prop('📍 ' + t('whereNow'), selectEl(STG().map((sg, k) => [String(k), sg]), String(x.stage || 0), (v) => { const k = +v; setS(x, k === 3 ? 2 : k === 0 ? 0 : 1, k); })));
       } else {
-        const sb = h('div', { class: 'stages' });
-        [t('sTodo'), t('sDoing'), t('sDone')].forEach((s, k) => sb.append(h('button', { class: 'chip', 'aria-pressed': (x.s || 0) === k ? 'true' : 'false', text: s, onclick: () => setS(x, k) })));
-        box.append(sb);
+        box.append(prop('📌 ' + t('pStatus'), selectEl([['0', t('sTodo')], ['1', t('sDoing')], ['2', t('sDone')]], String(x.s || 0), (v) => setS(x, +v))));
       }
       if (x.brief) box.append(h('p', { class: 'brief', text: x.brief }));
-      if (x.checks && x.checks.length) box.append(h('div', { class: 'subhead', text: t('checklist') + ' ' + cc }), checklistView(x.checks, false, (c) => { x.checks = c; updateAssigned(x.id, { checks: c }); renderList(); }));
-      box.append(h('div', { class: 'subhead', text: t('photos') }), gallery('a:' + x.id));
-      box.append(h('div', { class: 'subhead', text: t('thread') }), threadView(x.log, (m) => { (x.log = x.log || []).push({ a: 'msg', m, by: myName(), at: Date.now() }); updateAssigned(x.id, {}, { a: 'msg', m }); renderList(); }));
+      if (x.checks && x.checks.length) box.append(section('a' + x.id + ':c', t('checklist'), cc, checklistView(x.checks, false, (c) => { x.checks = c; updateAssigned(x.id, { checks: c }); renderList(); }), true));
+      box.append(section('a' + x.id + ':p', t('photos'), '', gallery('a:' + x.id), false));
+      const am = (x.log || []).filter((e) => e.a === 'msg').length;
+      box.append(section('a' + x.id + ':m', t('thread'), am ? n(am) : '', threadView(x.log, (m) => { (x.log = x.log || []).push({ a: 'msg', m, by: myName(), at: Date.now() }); updateAssigned(x.id, {}, { a: 'msg', m }); renderList(); }), am > 0));
       li.append(box);
     }
     ul.append(li);
@@ -795,134 +913,125 @@ function cycle(p, x) {
   touch(p); save(); render();
 }
 
+function section(key, title, badge, body, defOpen) {
+  const d = h('details', { class: 'sec2' }, h('summary', null, h('span', { text: title }), badge ? h('span', { class: 'badge', text: badge }) : null));
+  if (openSecs.has(key) || (defOpen && !openSecs.has('x:' + key))) d.open = true;
+  d.addEventListener('toggle', () => { if (d.open) { openSecs.add(key); openSecs.delete('x:' + key); } else { openSecs.delete(key); openSecs.add('x:' + key); } });
+  d.append(body); return d;
+}
+function prop(label, control) { return h('div', { class: 'prop' }, h('span', { class: 'plabel', text: label }), control); }
+function selectEl(opts, value, onchange) {
+  const sl = h('select', { class: 'field sel', onchange: (e) => onchange(e.target.value) });
+  opts.forEach(([v, l]) => { const o = h('option', { value: v, text: l }); if (v === value) o.selected = true; sl.append(o); });
+  return sl;
+}
+const HOUR = 3600000, DAY = 86400000, QMS = [HOUR, 3 * HOUR, DAY, 2 * DAY, 3 * DAY, 7 * DAY, 14 * DAY];
+function followSelect(x, onSet) {
+  const opts = [];
+  if (x.follow) opts.push(['cur', '✓ ' + fmtTs(x.follow)]);
+  opts.push(['', t('fNone')]);
+  t('quick').forEach((l, i) => opts.push(['q' + i, l]));
+  opts.push(['c', t('fCustom')]);
+  return selectEl(opts, x.follow ? 'cur' : '', (v) => {
+    if (v === 'cur') return;
+    if (v === 'c') { customFollow = x.id; onSet(null); return; }
+    customFollow = null;
+    x.follow = v === '' ? 0 : Date.now() + QMS[+v.slice(1)];
+    onSet(x.follow);
+  });
+}
 function editPanel(p, x) {
   const upd = () => { touch(p); save(); render(); };
   const box = h('div', { class: 'tedit' });
   const who = x.who || t('whoDefault');
 
-  box.append(h('label', null, t('whoQ'),
-    h('input', { class: 'field', list: 'names', value: x.who || '', placeholder: t('whoPh'), onchange: (e) => {
-      const v = e.target.value.trim();
-      if (x.shareEmail && norm(v) !== norm(x.who)) unshare(x);
-      x.who = v; upd();
-    } })));
-
-  // مشاركة
-  if (x.who) {
-    const m = member(x.who);
-    const line = h('div', { class: 'shareline' }, h('span', { class: 'kind', text: t('shareHead') + ' ' + x.who + ':' }),
-      h('button', { class: 'btn wa', type: 'button', text: t('shareWA'), onclick: () => openExternal(waLink(p, x)) }));
-    box.append(line);
-    if (cloud && m && m.email) {
-      const chk = h('input', { type: 'checkbox', onchange: (e) => {
-        if (e.target.checked) { x.shareEmail = m.email.trim().toLowerCase(); delete x._sh; } else unshare(x);
-        upd();
-      } });
-      chk.checked = !!x.shareEmail;
-      box.append(h('label', { class: 'check' }, chk, t('shareApp', x.who)));
-    } else if (cloud && m && !m.email) box.append(h('span', { class: 'kind', text: t('noEmailHint', x.who) }));
-    else if (!m) box.append(h('span', { class: 'kind', text: t('notInTeam', x.who) }));
-  }
-
-  // تفاصيل وعاجل
-  const br = h('textarea', { class: 'field', placeholder: t('detailsPh'), rows: '2', onchange: (e) => { x.brief = e.target.value.trim(); upd(); } });
-  br.value = x.brief || '';
-  box.append(h('label', null, t('details'), br));
-  const ug = h('input', { type: 'checkbox', onchange: (e) => { x.urgent = e.target.checked; upd(); } });
-  ug.checked = !!x.urgent;
-  box.append(h('label', { class: 'check' }, ug, t('urgent')));
-
-  // مراجعة
-  if (x.review === 'pending' && x.s === 2) box.prepend(h('div', { class: 'next' }, h('span', { text: t('needsReview', x.who || '') }),
+  if (x.review === 'pending' && x.s === 2) box.append(h('div', { class: 'next' }, h('span', { text: t('needsReview', x.who || '') }),
     h('span', { class: 'shareline' }, h('button', { class: 'btn solid', type: 'button', text: t('approve'), onclick: () => approve(p, x) }),
       h('button', { class: 'btn', type: 'button', text: t('returnTask'), onclick: () => sendBack(p, x) }))));
 
-  // قائمة فرعية وقوالب
-  box.append(h('div', { class: 'subhead', text: t('checklist') + (x.checks && x.checks.length ? ' ' + checkCount(x.checks) : '') }));
-  box.append(checklistView(x.checks || [], true, (c, adding) => {
+  const props = h('div', { class: 'props' });
+  props.append(prop('👤 ' + t('pWho'), h('input', { class: 'field', list: 'names', value: x.who || '', placeholder: t('whoPh'), onchange: (e) => {
+    const v = e.target.value.trim();
+    if (x.shareEmail && norm(v) !== norm(x.who)) unshare(x);
+    x.who = v; autoShare(x); upd();
+  } })));
+  props.append(prop('📅 ' + (x.kind === 'm' ? t('pPickup') : t('pDue')), h('div', { class: 'inline' },
+    h('input', { class: 'field', type: 'date', value: x.date || '', 'aria-label': t('day'), onchange: (e) => { x.date = e.target.value; if (!x.date) x.time = ''; upd(); } }),
+    h('input', { class: 'field', type: 'time', value: x.time || '', 'aria-label': t('timeOpt'), onchange: (e) => { x.time = e.target.value; if (x.time && !x.date) x.date = todayStr(); upd(); } }))));
+  props.append(prop('🔁 ' + t('pFollow'), followSelect(x, (v) => { upd(); if (v) toast(t('followToast', who, fmtTs(v))); })));
+  if (customFollow === x.id) {
+    const toLocal = (ts) => { const d = new Date(ts); return dstr(d) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes()); };
+    props.append(prop('', h('input', { class: 'field', type: 'datetime-local', value: x.follow ? toLocal(x.follow) : '', onchange: (e) => { const v = e.target.value; x.follow = v ? new Date(v).getTime() : 0; customFollow = null; upd(); } })));
+  }
+  props.append(prop('♻️ ' + t('repeat'), selectEl(['', 'd', 'w', 'm'].map((v, i) => [v, t('repeatOpts')[i]]), x.repeat || '', (v) => { x.repeat = v; delete x.repeated; upd(); })));
+  props.append(prop('⚡ ' + t('pPriority'), selectEl([['', t('normal')], ['u', t('urgent')]], x.urgent ? 'u' : '', (v) => { x.urgent = v === 'u'; upd(); })));
+  props.append(prop('🏷 ' + t('pType'), selectEl([['', t('typeTask')], ['m', t('typeTx')]], x.kind || '', (v) => {
+    if (v === 'm') { x.kind = 'm'; setStage(x, x.s === 2 ? 3 : x.s === 1 ? 1 : 0); } else x.kind = '';
+    upd();
+  })));
+  if (x.kind === 'm') props.append(prop('📍 ' + t('whereNow'), selectEl(STG().map((sg, k) => [String(k), sg]), String(x.stage || 0), (v) => { setStage(x, +v); if (+v === 3) x.follow = 0; upd(); })));
+  box.append(props);
+
+  if (x.who) {
+    const m = member(x.who);
+    const st = x.shareEmail ? (x.seenAt ? t('seen') : t('inApp', x.who)) : (m ? (m.email ? '' : t('noEmailHint', x.who)) : t('notInTeam', x.who));
+    box.append(h('div', { class: 'shareline' },
+      h('button', { class: 'btn wa', type: 'button', text: t('shareWA'), onclick: () => { const url = waLink(p, x); save(); openExternal(url); } }),
+      st ? h('span', { class: 'kind' + (x.shareEmail ? ' ok' : ''), text: st }) : null));
+  }
+
+  if (x.kind === 'm') box.append(section(x.id + ':tx', '📄 ' + t('secTx'), x.ref || '', h('div', { class: 'row' },
+    h('input', { class: 'field', value: x.office || '', placeholder: t('office'), onchange: (e) => { x.office = e.target.value.trim(); upd(); } }),
+    h('input', { class: 'field', value: x.ref || '', placeholder: t('ref'), dir: 'ltr', onchange: (e) => { x.ref = e.target.value.trim(); upd(); } }))));
+
+  const br = h('textarea', { class: 'field', placeholder: t('detailsPh'), rows: '3', onchange: (e) => { x.brief = e.target.value.trim(); upd(); } });
+  br.value = x.brief || '';
+  box.append(section(x.id + ':d', '📝 ' + t('details'), x.brief ? '✓' : '', br, !!x.brief));
+
+  const ck = h('div', { class: 'gal' });
+  ck.append(checklistView(x.checks || [], true, (c, adding) => {
     x.checks = c; upd();
     if (adding) { const f = detail.querySelector('#t-' + x.id + ' .checks input.field'); if (f) f.focus(); }
   }));
-  const tplSel = h('select', { class: 'field', onchange: (e) => {
-    const tp = state.templates.find((y) => y.id === e.target.value); if (!tp) return;
+  const tplOpts = [['', t('useTemplate')], ...state.templates.map((tp) => [tp.id, '📋 ' + tp.name])];
+  if ((x.checks || []).length) tplOpts.push(['save', '💾 ' + t('saveTemplate')]);
+  ck.append(selectEl(tplOpts, '', (v) => {
+    if (v === 'save') { state.templates.push({ id: uid(), name: x.text, checks: x.checks.map((c) => c.t), brief: x.brief || '' }); save(); toast(t('templateSaved')); render(); return; }
+    const tp = state.templates.find((y) => y.id === v); if (!tp) return;
     x.checks = [...(x.checks || []), ...tp.checks.map((c) => ({ id: uid(), t: c, d: false }))];
     if (!x.brief && tp.brief) x.brief = tp.brief;
     upd();
-  } });
-  tplSel.append(h('option', { value: '', text: t('useTemplate') }));
-  state.templates.forEach((tp) => tplSel.append(h('option', { value: tp.id, text: tp.name })));
-  box.append(h('div', { class: 'row' }, tplSel, h('button', { class: 'btn', type: 'button', text: t('saveTemplate'), onclick: () => {
-    if (!(x.checks || []).length) { toast(t('templateEmpty')); return; }
-    state.templates.push({ id: uid(), name: x.text, checks: x.checks.map((c) => c.t), brief: x.brief || '' }); save(); toast(t('templateSaved')); render();
-  } })));
+  }));
+  box.append(section(x.id + ':c', t('checklist'), checkCount(x.checks), ck, !!(x.checks && x.checks.length)));
 
-  // معاملة
-  const chk = h('input', { type: 'checkbox', onchange: (e) => { if (e.target.checked) { x.kind = 'm'; setStage(x, x.s === 2 ? 3 : x.s === 1 ? 1 : 0); } else { x.kind = ''; } upd(); } });
-  chk.checked = x.kind === 'm';
-  box.append(h('label', { class: 'check' }, chk, t('isTx')));
-  if (x.kind === 'm') {
-    box.append(h('div', { class: 'row' },
-      h('label', null, t('office'), h('input', { class: 'field', value: x.office || '', placeholder: t('officePh'), onchange: (e) => { x.office = e.target.value.trim(); upd(); } })),
-      h('label', null, t('ref'), h('input', { class: 'field', value: x.ref || '', dir: 'ltr', onchange: (e) => { x.ref = e.target.value.trim(); upd(); } }))));
-    const st = h('div', { class: 'stages' });
-    STG().forEach((s, k) => st.append(h('button', { class: 'chip', type: 'button', 'aria-pressed': (x.stage || 0) === k ? 'true' : 'false', text: s, onclick: () => { setStage(x, k); if (k === 3) x.follow = 0; upd(); } })));
-    box.append(h('div', { class: 'subhead', text: t('whereNow') }), st);
-  }
-
-  // ميعاد
-  box.append(h('div', { class: 'subhead', text: x.kind === 'm' ? t('pickupDate') : t('due') }));
-  box.append(h('div', { class: 'row' },
-    h('label', null, t('day'), h('input', { class: 'field', type: 'date', value: x.date || '', onchange: (e) => { x.date = e.target.value; if (!x.date) x.time = ''; upd(); } })),
-    h('label', null, t('timeOpt'), h('input', { class: 'field', type: 'time', value: x.time || '', onchange: (e) => { x.time = e.target.value; if (x.time && !x.date) x.date = todayStr(); upd(); } }))));
-  if (x.date) box.append(h('div', { class: 'acts' },
-    h('span', { class: 'kind', text: dueTs(x) > Date.now() ? t('willRemind', fmtDue(x)) : t('dueLate', fmtDue(x)) }),
-    h('button', { class: 'btn ghost', type: 'button', text: t('clearDue'), onclick: () => { x.date = ''; x.time = ''; upd(); } })));
-  const rp = h('select', { class: 'field', onchange: (e) => { x.repeat = e.target.value; delete x.repeated; upd(); } });
-  ['', 'd', 'w', 'm'].forEach((v, i) => { const o = h('option', { value: v, text: t('repeatOpts')[i] }); if ((x.repeat || '') === v) o.selected = true; rp.append(o); });
-  box.append(h('label', null, t('repeat'), rp));
-
-  // متابعة
-  box.append(h('div', { class: 'subhead', text: t('followQ', who) }));
-  const H = 3600000, D = 86400000, Q = [H, 3 * H, D, 2 * D, 3 * D, 7 * D, 14 * D];
-  const quick = h('div', { class: 'quick' });
-  t('quick').forEach((l, i) => quick.append(h('button', { class: 'btn', type: 'button', text: l, onclick: () => { x.follow = Date.now() + Q[i]; upd(); toast(t('followToast', who, fmtTs(x.follow))); } })));
-  box.append(quick);
-  const toLocal = (ts) => { const d = new Date(ts); return dstr(d) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes()); };
-  box.append(h('label', null, t('orPick'),
-    h('input', { class: 'field', type: 'datetime-local', value: x.follow ? toLocal(x.follow) : '', onchange: (e) => { const v = e.target.value; x.follow = v ? new Date(v).getTime() : 0; upd(); } })));
-  if (x.follow) box.append(h('div', { class: 'acts' },
-    h('span', { class: 'kind', text: t('followAt', fmtTs(x.follow)) }),
-    h('button', { class: 'btn ghost', type: 'button', text: t('cancelFollow'), onclick: () => { x.follow = 0; upd(); } })));
-  if (x.lastReview) box.append(h('span', { class: 'kind', text: t('lastReview', rel(x.lastReview)) }));
-
-  // صور وورق
   const key = 'o:' + x.id; galCtx[key] = { mode: 'o', p, x }; watchFiles(key);
-  box.append(h('div', { class: 'subhead', text: t('photos') }), gallery(key));
+  const nPh = (filesCache[key] || []).length;
+  box.append(section(x.id + ':p', t('photos'), nPh ? n(nPh) : '', gallery(key), false));
 
-  // محادثة وسجل
-  box.append(h('div', { class: 'subhead', text: t('thread') }), threadView(x.log, (m) => { logAdd(x, { a: 'msg', m }); touch(p); save(); render();
-    const f = detail.querySelector('#t-' + x.id + ' .thread input.field'); if (f) f.focus(); }));
+  const msgs = (x.log || []).filter((e) => e.a === 'msg').length;
+  box.append(section(x.id + ':m', t('thread'), msgs ? n(msgs) : '', threadView(x.log, (m) => { logAdd(x, { a: 'msg', m }); touch(p); save(); render();
+    const f = detail.querySelector('#t-' + x.id + ' .thread input.field'); if (f) f.focus(); }), msgs > 0));
   return box;
 }
 
 function taskRow(p, x) {
   const isOpen = openTask === x.id, dk = dueKind(x);
   const meta = [];
-  if (x.review === 'pending' && x.s === 2) meta.push(h('span', { class: 'urg', text: '⏳ ' + t('kReview') }));
-  if (x.urgent && x.s !== 2) meta.push(h('span', { class: 'urg', text: t('urgent') }));
   if (x.who) meta.push(h('span', { class: 'who', text: x.who }));
-  if (x.shareEmail) meta.push(h('span', { class: 'shr', text: t('sharedWith', x.who || x.shareEmail) + (x.seenAt ? ' · ' + t('seen') : '') }));
-  if (x.kind === 'm') meta.push(h('span', { class: 'stg' + (x.stage === 2 ? ' ready' : ''), text: STG()[x.stage || 0] + (x.office ? ' · ' + x.office : '') }));
   if (x.date) meta.push(h('span', { class: 'when ' + dk, text: (dk === 'over' ? t('late') : '') + fmtDue(x) }));
-  if (x.follow && x.s !== 2) meta.push(h('span', { class: 'fol' + (x.follow <= Date.now() ? ' when over' : ''), text: t('review', fmtTs(x.follow)) }));
-  if (x.reply) meta.push(h('span', { class: 'rep', text: t('replyLabel') + x.reply }));
-  if (x.repeat) meta.push(h('span', { text: '♻️ ' + t('repeatOpts')[['', 'd', 'w', 'm'].indexOf(x.repeat)] }));
-  if (x.photos || x.photoAt) meta.push(h('span', { text: '📷' }));
-  if (x.checks && x.checks.length) meta.push(h('span', { text: '☑ ' + checkCount(x.checks) }));
+  if (x.follow && x.s !== 2) meta.push(h('span', { class: 'fol' + (x.follow <= Date.now() ? ' when over' : ''), text: fmtTs(x.follow) }));
+  if (x.kind === 'm') meta.push(h('span', { class: 'stg' + (x.stage === 2 ? ' ready' : ''), text: STG()[x.stage || 0] }));
   if (x.s === 2 && x.doneAt) meta.push(h('span', { text: '✓ ' + fmtTs(x.doneAt) }));
-  const lastMsg = (x.log || []).filter((e) => e.a === 'msg').pop();
-  if (lastMsg && !openTask) meta.push(h('span', { class: 'rep', text: '💬 ' + lastMsg.by + ': ' + (lastMsg.m.length > 40 ? lastMsg.m.slice(0, 40) + '…' : lastMsg.m) }));
-  if (x.brief) meta.push(h('span', { class: 'rep', text: '📝 ' + (x.brief.length > 40 ? x.brief.slice(0, 40) + '…' : x.brief) }));
+  const ic = [];
+  if (x.review === 'pending' && x.s === 2) ic.push('⏳');
+  if (x.urgent && x.s !== 2) ic.push('🔴');
+  if (x.shareEmail) ic.push(x.seenAt ? '👁' : '📲');
+  if (x.checks && x.checks.length) ic.push('☑' + checkCount(x.checks));
+  const nm = (x.log || []).filter((e) => e.a === 'msg').length; if (nm) ic.push('💬' + nm);
+  if (x.photos || x.photoAt) ic.push('📷');
+  if (x.repeat) ic.push('♻️');
+  if (x.brief) ic.push('📝');
+  if (ic.length) meta.push(h('span', { class: 'icons', text: ic.join(' ') }));
   const li = h('li', { class: 'task' + (x.s === 2 ? ' done' : x.s === 1 ? ' doing' : ''), id: 't-' + x.id },
     h('button', { class: 'st', 'data-s': x.s, 'aria-label': x.kind === 'm' ? t('aStage', STG()[x.stage || 0]) : x.s === 0 ? t('aTodo') : x.s === 1 ? t('aDoing') : t('aDone'), onclick: () => cycle(p, x) }),
     h('div', { class: 'tbody' },
@@ -976,10 +1085,13 @@ function renderDetail() {
     const q = parseQuick(v);
     const nt = { id: uid(), text: q.text, s: 0 };
     if (q.who) nt.who = q.who; if (q.date) nt.date = q.date; if (q.time) nt.time = q.time; if (q.urgent) nt.urgent = true;
+    const tp = state.templates.find((y) => y.name && norm(nt.text).includes(norm(y.name)));
+    if (tp) { nt.checks = tp.checks.map((c) => ({ id: uid(), t: c, d: false })); if (tp.brief) nt.brief = tp.brief; toast(t('tplApplied', tp.name)); }
+    if (nt.who) autoShare(nt);
     p.tasks.push(nt); touch(p); save(); render();
     const f = detail.querySelector('.addt input'); if (f) f.focus();
   } }, addIn, h('button', { class: 'btn', type: 'submit', text: t('add') })));
-  detail.append(h('p', { class: 'legend', text: t('legend') }), h('p', { class: 'legend', text: t('quickHint') }));
+  detail.append(h('details', { class: 'legend help' }, h('summary', { text: '❓ ' + t('helpTitle') }), h('p', { text: t('legend') }), h('p', { text: t('quickHint') })));
 
   if (closed.length) {
     const dg = h('details', { class: 'donegrp' }, h('summary', { text: t('doneGroup', n(closed.length)) }));
@@ -1023,6 +1135,17 @@ function parseQuick(raw) {
   }
   const D = [[/\s(بعد بكر[ةه]|prekosjutra|prekosutra|day after tomorrow)(?=\s)/i, 2], [/\s(النهارده|النهاردة|اليوم|today|danas)(?=\s)/i, 0], [/\s(بكر[ةه]|tomorrow|sjutra|sutra)(?=\s)/i, 1]];
   for (const [re, add] of D) { const mm2 = s.match(re); if (mm2) { const d = new Date(); d.setDate(d.getDate() + add); out.date = dstr(d); s = s.replace(mm2[0], ' '); break; } }
+  if (!out.date) {
+    const WD = [['الأحد', 'الاحد', 'sunday', 'nedjelja', 'nedjelju'], ['الاثنين', 'الإثنين', 'monday', 'ponedjeljak'], ['الثلاثاء', 'tuesday', 'utorak'], ['الأربعاء', 'الاربعاء', 'wednesday', 'srijeda', 'srijedu'], ['الخميس', 'thursday', 'četvrtak', 'cetvrtak'], ['الجمعة', 'الجمعه', 'friday', 'petak'], ['السبت', 'saturday', 'subota', 'subotu']];
+    for (let i = 0; i < 7 && !out.date; i++) for (const w of WD[i]) {
+      const re = new RegExp('\\s(?:يوم\\s)?' + w + '(?=\\s)', 'i'); const mw = s.match(re);
+      if (mw) { const d = new Date(); let k = (i - d.getDay() + 7) % 7; if (k === 0) k = 7; d.setDate(d.getDate() + k); out.date = dstr(d); s = s.replace(mw[0], ' '); break; }
+    }
+  }
+  if (!out.date) {
+    const mn = s.match(/\s(?:بعد|in|za)\s+(\d{1,2})\s*(?:أيام|ايام|يوم|days?|dana)(?=\s)/i);
+    if (mn) { const d = new Date(); d.setDate(d.getDate() + +mn[1]); out.date = dstr(d); s = s.replace(mn[0], ' '); }
+  }
   if (out.time && !out.date) out.date = todayStr();
   out.text = s.replace(/\s+/g, ' ').trim() || raw.trim();
   return out;
@@ -1089,6 +1212,7 @@ function openDash() {
   openSheet(box);
 }
 $('dashBtn').addEventListener('click', openDash);
+$('orgBtn').addEventListener('click', () => { openOrg = null; openCompany(); });
 
 /* ---------------- departments sheet ---------------- */
 function openDepts() {
@@ -1165,10 +1289,19 @@ function openSettings() {
 $('menuBtn').addEventListener('click', openSettings);
 $('langBtn').addEventListener('click', () => { const o = ['ar', 'en', 'me']; setLang(o[(o.indexOf(lang) + 1) % 3]); toast(t('langName')); });
 
-function openTeam() {
-  const box = h('div', { class: 'box', role: 'dialog', 'aria-label': t('team') });
+function openTeam(fresh) {
+  if (fresh !== false && cloud) { loadMemberStatus().then(() => { if ($('sheetRoot').querySelector('[data-team]')) openTeam(false); }); }
+  const box = h('div', { class: 'box', role: 'dialog', 'aria-label': t('team'), 'data-team': '1' });
   box.append(h('h2', { text: t('team') }), h('p', { class: 'muted', text: t('teamHint') }));
-  const changed = () => { allTasks().forEach(({ t: x }) => { const m = member(x.who); if (x.shareEmail && (!m || (m.email || '').trim().toLowerCase() !== x.shareEmail)) unshare(x); }); save(); render(); };
+  const withEmail = (state.team || []).filter((m) => m.email);
+  if (cloud && withEmail.length) {
+    const inst = withEmail.filter((m) => memberStatus[m.email.trim().toLowerCase()]).length;
+    box.append(h('p', { class: 'next', text: t('installedSum', n(inst), n(withEmail.length)) }));
+  }
+  box.append(h('button', { class: 'btn', type: 'button', text: t('copyLink'), onclick: async () => {
+    try { await navigator.clipboard.writeText(APK_URL); toast(t('copied')); } catch (e) { toast(APK_URL); }
+  } }));
+  const changed = () => { allTasks().forEach(({ t: x }) => { const m = member(x.who); if (x.shareEmail && (!m || (m.email || '').trim().toLowerCase() !== x.shareEmail)) unshare(x); }); save(); render(); syncOrgIndex(); };
   (state.team || []).forEach((m) => {
     const card = h('div', { class: 'member' },
       h('input', { class: 'field', value: m.name || '', placeholder: t('name'), onchange: (e) => {
@@ -1179,14 +1312,25 @@ function openTeam() {
       h('div', { class: 'row' },
         h('input', { class: 'field', value: m.phone || '', placeholder: t('phone'), dir: 'ltr', inputmode: 'tel', onchange: (e) => { m.phone = e.target.value.trim(); save(); } }),
         h('input', { class: 'field', value: m.email || '', placeholder: t('emailOpt'), dir: 'ltr', type: 'email', onchange: (e) => { m.email = e.target.value.trim().toLowerCase(); changed(); } })),
-      (() => { const sel = h('select', { class: 'field', 'aria-label': t('depts'), onchange: (e) => { m.dept = e.target.value; save(); } });
+      (() => { const sel = h('select', { class: 'field', 'aria-label': t('depts'), onchange: (e) => { m.dept = e.target.value; save(); syncOrgIndex(); } });
         sel.append(h('option', { value: '', text: t('noDept') }));
         state.depts.forEach((d) => { const o = h('option', { value: d.id, text: d.icon + ' ' + d.name }); if (m.dept === d.id) o.selected = true; sel.append(o); });
         return sel; })(),
-      h('button', { class: 'btn ghost', type: 'button', text: t('remove'), onclick: () => { state.team = state.team.filter((y) => y !== m); changed(); openTeam(); } }));
+      selectEl(['staff', 'head', 'manager'].map((r, i) => [r, '🎖 ' + t('roles')[i]]), m.role || 'staff', (v) => { m.role = v; save(); syncOrgIndex(); }),
+      (() => { const sel = h('select', { class: 'field', 'aria-label': t('language'), onchange: (e) => { m.lang = e.target.value; save(); } });
+        ['ar', 'en', 'me'].forEach((l) => { const o = h('option', { value: l, text: '🌐 ' + window.L[l].langName }); if ((m.lang || lang) === l) o.selected = true; sel.append(o); });
+        return sel; })(),
+      (() => {
+        if (!m.email) return h('span', { class: 'kind', text: t('needEmail') });
+        const st = memberStatus[m.email.trim().toLowerCase()];
+        const line = st ? t('installed', rel(st.lastSeen)) + (st.platform === 'web' ? ' · 💻' : ' · 📱') : st === null ? t('notInstalled') : '…';
+        return h('div', { class: 'shareline' }, h('span', { class: 'kind' + (st ? ' ok' : ''), text: line }),
+          h('button', { class: 'btn wa', type: 'button', text: t('invite'), onclick: () => openExternal(inviteLink(m)) }));
+      })(),
+      h('button', { class: 'btn ghost', type: 'button', text: t('remove'), onclick: () => { state.team = state.team.filter((y) => y !== m); changed(); openTeam(false); } }));
     box.append(card);
   });
-  box.append(h('button', { class: 'btn', text: t('addMember'), onclick: () => { state.team.push({ id: uid(), name: '', phone: '', email: '' }); save(); openTeam(); const ins = $('sheetRoot').querySelectorAll('.member input'); if (ins.length) ins[ins.length - 3].focus(); } }));
+  box.append(h('button', { class: 'btn', text: t('addMember'), onclick: () => { state.team.push({ id: uid(), name: '', phone: '', email: '', lang }); save(); openTeam(false); const ins = $('sheetRoot').querySelectorAll('.member input'); if (ins.length) ins[ins.length - 3].focus(); } }));
   box.append(h('button', { class: 'btn ghost', text: t('close'), onclick: () => { state.team = state.team.filter((m) => m.name || m.phone || m.email); save(); render(); openSettings(); } }));
   openSheet(box);
 }
@@ -1263,6 +1407,7 @@ async function startCloud() {
       else if (!snap.metadata.fromCache && state.projects.length) save();
     }, (e) => { console.warn(e); setSync('err'); });
     unsubShared = startShared(F, db, user);
+    announce(); resolveOrg(); loadMemberStatus();
   });
 }
 

@@ -242,6 +242,26 @@ select.field{appearance:auto}
 .citem.done span{text-decoration:line-through;color:var(--muted)}
 .deptsel{max-width:260px;margin:0 0 6px;padding:6px 10px;font-size:.88rem}
 #depts{margin-bottom:8px}
+.kind.ok{color:#1F8A4C;font-weight:600}
+.props{display:grid;gap:6px;background:var(--sheet);border-radius:12px;padding:8px 10px}
+.prop{display:grid;grid-template-columns:118px 1fr;align-items:center;gap:8px;min-height:38px}
+.plabel{font-size:.82rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prop .field{padding:6px 10px;font-size:.9rem;background:var(--paper)}
+.inline{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(0,1fr);gap:6px}
+.inline .field{padding:6px 6px;min-width:0}
+select.sel{width:100%}
+details.sec2{background:var(--sheet);border-radius:12px;padding:0 10px}
+details.sec2>summary{list-style:none;cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:10px 2px;font-size:.9rem;font-weight:600;color:var(--ink)}
+details.sec2>summary::-webkit-details-marker{display:none}
+details.sec2>summary::after{content:"▾";color:var(--muted);margin-inline-start:8px;transition:transform .2s}
+details.sec2[open]>summary::after{transform:rotate(180deg)}
+details.sec2>summary .badge{margin-inline-start:auto;font-size:.75rem;background:var(--paper);color:var(--muted);border-radius:999px;padding:1px 8px;font-weight:500}
+details.sec2[open]{padding-bottom:10px}
+.tmeta .icons{letter-spacing:.5px}
+details.help summary{cursor:pointer;color:var(--muted);font-size:.8rem}
+details.help p{margin:6px 0 0}
+.note{min-height:76px}
+@media (max-width:420px){.prop{grid-template-columns:88px minmax(0,1fr)}.plabel{font-size:.78rem}}
 .toast{position:fixed;bottom:calc(18px + env(safe-area-inset-bottom,0px));inset-inline:0;margin:auto;width:max-content;max-width:90vw;background:var(--text);color:var(--sheet);padding:8px 16px;border-radius:999px;font-size:.88rem;z-index:30}
 </style>
 </head>
@@ -269,6 +289,7 @@ select.field{appearance:auto}
       <div style="display:flex;align-items:center;gap:6px">
         <span class="sync" id="sync"><i></i><span>بيحمّل…</span></span>
         <button class="iconbtn langbtn" id="langBtn" type="button">ع</button>
+        <button class="iconbtn" id="orgBtn" type="button" hidden aria-label="Company">🏢</button>
         <button class="iconbtn" id="dashBtn" type="button" aria-label="Dashboard">📊</button>
         <button class="iconbtn" id="menuBtn" aria-label="الإعدادات" title="الإعدادات">⚙︎</button>
         <button class="btn solid" id="addBtn">+ مشروع</button>
